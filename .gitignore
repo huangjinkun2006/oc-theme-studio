@@ -1,0 +1,11 @@
+# 本地构建产物
+.build/
+.cache/
+*.app/
+*.dmg
+*.dSYM/
+*.o
+
+# macOS
+.DS_Store
+__MACOSX/

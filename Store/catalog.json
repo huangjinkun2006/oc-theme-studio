@@ -1,0 +1,43 @@
+{
+  "themes": [
+    {
+      "id": "demo-standard",
+      "name": "标准启动项（示例）",
+      "author": "OC Theme Studio",
+      "description": "macOS + Windows + Linux + 恢复/工具，8 个常用图标。这是离线示例主题，点「下载主题」会直接在本机生成，无需服务器。",
+      "version": "1.0",
+      "tags": ["示例", "标准", "macOS", "Windows", "Linux"],
+      "thumbnail": "preset://standard",
+      "download": "preset://standard",
+      "sizeText": "—",
+      "updated": "内置",
+      "downloads": 0
+    },
+    {
+      "id": "demo-minimal",
+      "name": "极简四图标（示例）",
+      "author": "OC Theme Studio",
+      "description": "只要 macOS / Windows / Linux / 工具，界面最干净。离线示例，下载即生成。",
+      "version": "1.0",
+      "tags": ["示例", "极简"],
+      "thumbnail": "preset://minimal",
+      "download": "preset://minimal",
+      "sizeText": "—",
+      "updated": "内置",
+      "downloads": 0
+    },
+    {
+      "id": "demo-linux",
+      "name": "多发行版（示例）",
+      "author": "OC Theme Studio",
+      "description": "macOS + Windows + 常见 Linux 发行版（Ubuntu/Fedora/Debian/Arch…）。离线示例，下载即生成。",
+      "version": "1.0",
+      "tags": ["示例", "Linux", "多发行版"],
+      "thumbnail": "preset://linux",
+      "download": "preset://linux",
+      "sizeText": "—",
+      "updated": "内置",
+      "downloads": 0
+    }
+  ]
+}

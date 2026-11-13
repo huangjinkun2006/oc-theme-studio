@@ -1,0 +1,53 @@
+{
+  "presets": [
+    {
+      "id": "standard",
+      "name": "标准启动项",
+      "desc": "macOS + Windows + Linux + 恢复/工具，8 个常用图标",
+      "background": "Background-Midnight.png",
+      "selected": "Selected.png",
+      "icons": [
+        { "file": "Apple.icns", "label": "macOS" },
+        { "file": "Windows.icns", "label": "Windows" },
+        { "file": "Linux.icns", "label": "Linux" },
+        { "file": "AppleRecv.icns", "label": "Recovery" },
+        { "file": "HardDrive.icns", "label": "Hard Drive" },
+        { "file": "Tool.icns", "label": "Tools" },
+        { "file": "Restart.icns", "label": "Restart" },
+        { "file": "ShutDown.icns", "label": "Shut Down" }
+      ]
+    },
+    {
+      "id": "minimal",
+      "name": "极简四图标",
+      "desc": "只要 macOS / Windows / Linux / 工具，界面最干净",
+      "background": "Background-Graphite.png",
+      "selected": "Selected.png",
+      "icons": [
+        { "file": "Apple.icns", "label": "macOS" },
+        { "file": "Windows.icns", "label": "Windows" },
+        { "file": "Linux.icns", "label": "Linux" },
+        { "file": "Tool.icns", "label": "Tools" }
+      ]
+    },
+    {
+      "id": "linux",
+      "name": "多发行版",
+      "desc": "macOS + Windows + 常见 Linux 发行版（Ubuntu/Fedora/Debian/Arch…）",
+      "background": "Background-Aurora.png",
+      "selected": "Selected.png",
+      "icons": [
+        { "file": "Apple.icns", "label": "macOS" },
+        { "file": "Windows.icns", "label": "Windows" },
+        { "file": "Ubuntu.icns", "label": "Ubuntu" },
+        { "file": "Fedora.icns", "label": "Fedora" },
+        { "file": "Debian.icns", "label": "Debian" },
+        { "file": "Arch.icns", "label": "Arch" },
+        { "file": "Manjaro.icns", "label": "Manjaro" },
+        { "file": "Mint.icns", "label": "Linux Mint" },
+        { "file": "openSUSE.icns", "label": "openSUSE" },
+        { "file": "Tool.icns", "label": "Tools" }
+      ]
+    }
+  ]
+}
