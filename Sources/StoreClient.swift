@@ -8,6 +8,29 @@ import AppKit
 // offline catalog of demo themes so the UI is never empty. Everything is
 // dependency-free (URLSession).
 
+/// 商店分类：完整主题为默认类型；图标区 / 背景区 / 字体区用于分享单类资源。
+/// slug 与后端 `store_server.py` 的 CATEGORIES 保持一致。
+enum StoreCategory: String {
+    case all = "all"
+    case theme = "theme"
+    case icons = "icons"
+    case background = "background"
+    case fonts = "fonts"
+
+    var label: String {
+        switch self {
+        case .all: return "全部"
+        case .theme: return "完整主题"
+        case .icons: return "图标区"
+        case .background: return "背景区"
+        case .fonts: return "字体区"
+        }
+    }
+
+    static let selectable: [StoreCategory] = [.all, .theme, .icons, .background, .fonts]
+    static let uploadable: [StoreCategory] = [.theme, .icons, .background, .fonts]
+}
+
 struct StoreTheme: Codable, Identifiable {
     let id: String
     let name: String
@@ -15,12 +38,18 @@ struct StoreTheme: Codable, Identifiable {
     let description: String
     let version: String?
     let tags: [String]
+    let category: String?       // "theme" / "icons" / "background" / "fonts"
+    let categoryLabel: String?  // 服务端下发的中文显示名
     let thumbnail: String?     // "preset://<id>" or "/files/<id>/preview/0.png"
     let download: String?      // "preset://<id>" or "/api/themes/<id>/download"
     let sizeText: String?
     let updated: String?
     let downloads: Int?
 
+    var categoryKind: StoreCategory {
+        StoreCategory(rawValue: category ?? StoreCategory.theme.rawValue) ?? .theme
+    }
+    var categoryDisplay: String { categoryLabel ?? categoryKind.label }
     var localDemo: Bool { (thumbnail ?? "").hasPrefix("preset://") }
     var presetId: String? {
         guard localDemo, let t = thumbnail else { return nil }
@@ -82,6 +111,39 @@ final class StoreClient {
         return arr.compactMap { decode($0) }
     }
 
+    /// 离线示例也按分类过滤：内置示例都是完整主题，单类资源区为空。
+    static func loadOffline(category: StoreCategory) -> [StoreTheme] {
+        let all = loadOffline()
+        guard category != .all else { return all }
+        return all.filter { $0.categoryKind == category }
+    }
+
+    /// 读取服务端各分类数量，用于商店窗口的分类下拉标题。
+    static func categories(completion: @escaping ([StoreCategory: Int]) -> Void) {
+        guard let base = baseURL else {
+            completion([:])
+            return
+        }
+        var req = URLRequest(url: base.appendingPathComponent("api/categories"))
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            var counts: [StoreCategory: Int] = [:]
+            var total = 0
+            if let data = data,
+               let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] {
+                for d in arr {
+                    guard let raw = d["id"] as? String,
+                          let c = StoreCategory(rawValue: raw) else { continue }
+                    let n = d["count"] as? Int ?? 0
+                    counts[c] = n
+                    total += n
+                }
+                counts[.all] = total
+            }
+            completion(counts)
+        }.resume()
+    }
+
     private static func decode(_ d: [String: Any]) -> StoreTheme? {
         guard let id = d["id"] as? String,
               let name = d["name"] as? String,
@@ -91,6 +153,8 @@ final class StoreClient {
             id: id, name: name, author: author, description: desc,
             version: d["version"] as? String,
             tags: d["tags"] as? [String] ?? [],
+            category: d["category"] as? String,
+            categoryLabel: d["categoryLabel"] as? String,
             thumbnail: d["thumbnail"] as? String,
             download: d["download"] as? String,
             sizeText: d["sizeText"] as? String,
@@ -115,18 +179,25 @@ final class StoreClient {
 
     // MARK: List
 
-    static func list(completion: @escaping (Result<[StoreTheme], Error>) -> Void) {
+    static func list(category: StoreCategory = .all,
+                     completion: @escaping (Result<[StoreTheme], Error>) -> Void) {
         guard let base = baseURL else {
-            completion(.success(loadOffline()))
+            completion(.success(loadOffline(category: category)))
             return
         }
-        var req = URLRequest(url: base.appendingPathComponent("api/themes"))
+        var url = base.appendingPathComponent("api/themes")
+        if category != .all {
+            var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            comps?.queryItems = [URLQueryItem(name: "category", value: category.rawValue)]
+            url = comps?.url ?? url
+        }
+        var req = URLRequest(url: url)
         req.timeoutInterval = 20
         URLSession.shared.dataTask(with: req) { data, _, _ in
             guard let data = data,
                   let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
                 // Network failure → fall back to offline demo catalog.
-                completion(.success(loadOffline()))
+                completion(.success(loadOffline(category: category)))
                 return
             }
             completion(.success(arr.compactMap { decode($0) }))
@@ -177,6 +248,7 @@ final class StoreClient {
         var description: String
         var version: String
         var tags: [String]
+        var category: String = StoreCategory.theme.rawValue  // 上传时选择的资源类型
         var package: URL?        // a .zip theme package
         var previews: [URL]      // preview images
     }
@@ -206,6 +278,7 @@ final class StoreClient {
         append("description", spec.description)
         append("version", spec.version)
         append("tags", spec.tags.joined(separator: ","))
+        append("category", spec.category)
 
         if let pkg = spec.package {
             if let data = try? Data(contentsOf: pkg) {

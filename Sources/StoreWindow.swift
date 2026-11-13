@@ -45,12 +45,11 @@ final class StoreCardView: NSTableCellView {
     func configure(_ t: StoreTheme, image: NSImage?, downloaded: Bool) {
         nameF.stringValue = t.name
         authorF.stringValue = "by \(t.author)" + (t.sizeText.map { " · \($0)" } ?? "")
-        if !t.tags.isEmpty {
-            tagF.isHidden = false
-            tagF.stringValue = " " + t.tags.prefix(2).joined(separator: " · ") + " "
-            tagF.textColor = .controlAccentColor
-            tagF.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
-        } else { tagF.isHidden = true }
+        tagF.isHidden = false
+        let bits = [t.categoryDisplay] + Array(t.tags.prefix(2))
+        tagF.stringValue = " " + bits.joined(separator: " · ") + " "
+        tagF.textColor = .controlAccentColor
+        tagF.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
         stateF.stringValue = downloaded ? "已下载 ✓" : (t.localDemo ? "示例" : "")
         stateF.textColor = downloaded ? .systemGreen : .tertiaryLabelColor
         if let img = image { thumb.image = img }
@@ -114,7 +113,8 @@ final class StoreDetailView: NSView {
         }
         nameF.stringValue = t.name
         authorF.stringValue = "by \(t.author)" + (t.updated.map { " · 更新于 \($0)" } ?? "")
-        tagsF.stringValue = t.tags.isEmpty ? "" : "#" + t.tags.joined(separator: "  #")
+        let cat = "类型：" + t.categoryDisplay
+        tagsF.stringValue = t.tags.isEmpty ? cat : cat + "   #" + t.tags.joined(separator: "  #")
         descF.stringValue = t.description
         downloadBtn.isEnabled = true
         if let u = StoreClient.thumbnailURL(for: t) { loadRemoteImage(u, into: thumb) }
@@ -149,20 +149,28 @@ final class StoreView: NSView {
     let status = UI.label("就绪", size: 11, color: .secondaryLabelColor)
     let spinner = NSProgressIndicator()
     let titleF = UI.label("主题商店", size: 15, weight: .semibold)
+    let catLabel = UI.label("分类", size: 11, color: .secondaryLabelColor)
+    let categoryPop = NSPopUpButton()
 
     var onApplyTheme: ((Theme) -> Void)?
     fileprivate var themes: [StoreTheme] = []
     fileprivate var selected: StoreTheme?
     fileprivate var downloaded: [String: Theme] = [:]
     private var busy = false
+    private var selectedCategory: StoreCategory = .all
+    private var categoryCounts: [StoreCategory: Int] = [:]
 
     override init(frame frameRect: NSRect) {
         let p = makeTable(rowHeight: 74); listScroll = p.0; listTable = p.1
         super.init(frame: frameRect)
         spinner.style = .spinning; spinner.controlSize = .small; spinner.isDisplayedWhenStopped = false
+        categoryPop.font = .systemFont(ofSize: 11.5)
+        categoryPop.target = self
+        categoryPop.action = #selector(categoryChanged)
+        updateCategoryTitles()
         if let u = StoreClient.baseURL { addrField.stringValue = u.absoluteString }
-        for v in [titleF, addrField, refreshBtn, uploadBtn, listScroll, detail,
-                  status, spinner] as [NSView] { addSubview(v) }
+        for v in [titleF, addrField, refreshBtn, uploadBtn, catLabel, categoryPop,
+                  listScroll, detail, status, spinner] as [NSView] { addSubview(v) }
         listTable.target = self
         listTable.action = #selector(cardClicked)
     }
@@ -174,10 +182,41 @@ final class StoreView: NSView {
         StoreClient.saveBaseURL(addrField.stringValue.trimmingCharacters(in: .whitespaces))
     }
 
+    /// 分类下拉标题附带服务端返回的数量；旧服务器没有 /api/categories 时只显示名称。
+    private func updateCategoryTitles() {
+        let current = selectedCategory
+        categoryPop.removeAllItems()
+        for c in StoreCategory.selectable {
+            let suffix = categoryCounts[c].map { " (\($0))" } ?? ""
+            categoryPop.addItem(withTitle: c.label + suffix)
+        }
+        if let idx = StoreCategory.selectable.firstIndex(of: current) {
+            categoryPop.selectItem(at: idx)
+        }
+    }
+
+    func refreshCategories() {
+        StoreClient.categories { [weak self] counts in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.categoryCounts = counts
+                self.updateCategoryTitles()
+            }
+        }
+    }
+
+    @objc private func categoryChanged() {
+        let idx = categoryPop.indexOfSelectedItem
+        guard idx >= 0, idx < StoreCategory.selectable.count else { return }
+        selectedCategory = StoreCategory.selectable[idx]
+        load()
+    }
+
     func load() {
         syncAddress()
         setBusy(true, "正在获取主题列表…")
-        StoreClient.list { [weak self] result in
+        let cat = selectedCategory
+        StoreClient.list(category: cat) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.setBusy(false)
@@ -185,9 +224,16 @@ final class StoreView: NSView {
                 case .success(let ts):
                     self.themes = ts
                     self.listTable.reloadData()
-                    self.status.stringValue = "共 \(ts.count) 个主题" +
+                    let scope = cat == .all ? "" : " · \(cat.label)"
+                    self.status.stringValue = "共 \(ts.count) 项" + scope +
                         (StoreClient.baseURL == nil ? "（离线示例，未连接服务器）" : "")
-                    if let first = ts.first { self.select(first) }
+                    if let first = ts.first {
+                        self.select(first)
+                    } else {
+                        self.selected = nil
+                        self.detail.theme = nil
+                        self.detail.localTheme = nil
+                    }
                 case .failure(let err):
                     self.status.stringValue = "加载失败：\(err.localizedDescription)"
                 }
@@ -195,7 +241,10 @@ final class StoreView: NSView {
         }
     }
 
-    @objc func refresh() { load() }
+    @objc func refresh() {
+        refreshCategories()
+        load()
+    }
 
     @objc func cardClicked() {
         let row = listTable.selectedRow
@@ -288,7 +337,10 @@ final class StoreView: NSView {
         addrField.frame = NSRect(x: pad, y: toolbarY, width: max(160, tfW), height: 26)
         refreshBtn.frame = NSRect(x: bounds.width - pad - 188, y: toolbarY, width: 90, height: 26)
         uploadBtn.frame = NSRect(x: bounds.width - pad - 90, y: toolbarY, width: 90, height: 26)
-        let top = toolbarY + 34
+        let catY = toolbarY + 32
+        catLabel.frame = NSRect(x: pad, y: catY + 5, width: 32, height: 16)
+        categoryPop.frame = NSRect(x: pad + 36, y: catY, width: 160, height: 26)
+        let top = catY + 34
         let leftW: CGFloat = 320
         listScroll.frame = NSRect(x: pad - 2, y: top, width: leftW,
                                   height: bounds.height - top - 28)
@@ -310,7 +362,7 @@ final class StoreWindowController: NSWindowController, NSTableViewDataSource, NS
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = "主题商店"
-        w.minSize = NSSize(width: 760, height: 540)
+        w.minSize = NSSize(width: 760, height: 580)
         w.center()
         let size = w.contentRect(forFrameRect: w.frame).size
         w.contentView = StoreView(frame: NSRect(origin: .zero, size: size))
@@ -333,6 +385,7 @@ final class StoreWindowController: NSWindowController, NSTableViewDataSource, NS
         v.onApplyTheme = { [weak self] theme in
             self?.applyTheme(theme)
         }
+        v.refreshCategories()
         v.load()
     }
 
@@ -379,8 +432,11 @@ final class StoreUploadView: NSView {
     let authorF = UI.field("作者 / 昵称")
     let versionF = UI.field("版本（可选）")
     let tagsF = UI.field("标签，逗号分隔（如：macOS, 暗色, 极简）")
+    let catLabel = UI.label("资源类型", size: 11, color: .secondaryLabelColor)
+    let categoryPop = NSPopUpButton()
+    let categoryHint = UI.label("", size: 10.5, color: .secondaryLabelColor)
     let descField = NSTextView(frame: .zero)
-    let pkgBtn = UI.button("选择主题包（ZIP 或本机主题）…", height: 26)
+    let pkgBtn = UI.button("选择资源包（ZIP 或本机主题）…", height: 26)
     let pkgLabel = UI.label("未选择", size: 11, color: .secondaryLabelColor)
     let prevBtn = UI.button("添加预览图…", height: 26)
     let prevLabel = UI.label("未选择", size: 11, color: .secondaryLabelColor)
@@ -393,12 +449,39 @@ final class StoreUploadView: NSView {
     private var package: URL?
     private var previews: [URL] = []
 
+    private var selectedCategory: StoreCategory {
+        let idx = categoryPop.indexOfSelectedItem
+        guard idx >= 0, idx < StoreCategory.uploadable.count else { return .theme }
+        return StoreCategory.uploadable[idx]
+    }
+
+    private func updateCategoryHint() {
+        switch selectedCategory {
+        case .theme:
+            categoryHint.stringValue = "完整主题：背景 + 启动项图标，可在 App 中直接应用。"
+        case .icons:
+            categoryHint.stringValue = "图标区：把 .icns 启动项图标打包成 .zip，App 会识别为仅图标包。"
+        case .background:
+            categoryHint.stringValue = "背景区：把 Background*.png / .icns 打包成 .zip。"
+        case .fonts:
+            categoryHint.stringValue = "字体区：把 .ttf / .otf 打包成 .zip；纯字体包下载后手动取用。"
+        case .all:
+            categoryHint.stringValue = ""
+        }
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         descField.isEditable = true
         descField.isRichText = false
         descField.font = .systemFont(ofSize: 12)
         descField.textContainerInset = NSSize(width: 4, height: 4)
+        categoryPop.font = .systemFont(ofSize: 11.5)
+        categoryPop.addItems(withTitles: StoreCategory.uploadable.map { $0.label })
+        categoryPop.target = self; categoryPop.action = #selector(categoryChanged)
+        categoryHint.lineBreakMode = .byWordWrapping
+        categoryHint.maximumNumberOfLines = 2
+        updateCategoryHint()
         let box = NSScrollView(frame: .zero)
         box.hasVerticalScroller = true
         box.documentView = descField
@@ -407,7 +490,8 @@ final class StoreUploadView: NSView {
         box.layer?.borderColor = NSColor.separatorColor.cgColor
         box.layer?.cornerRadius = 5
         addSubview(box)
-        for v in [nameF, authorF, versionF, tagsF, pkgBtn, pkgLabel, prevBtn,
+        for v in [nameF, authorF, versionF, tagsF, catLabel, categoryPop,
+                  categoryHint, pkgBtn, pkgLabel, prevBtn,
                   prevLabel, uploadBtn, cancelBtn, status] as [NSView] { addSubview(v) }
         (self as StoreUploadView).scrollBox = box
         pkgBtn.target = self; pkgBtn.action = #selector(choosePkg)
@@ -426,6 +510,11 @@ final class StoreUploadView: NSView {
         for (f, h) in [(nameF, 24), (authorF, 24), (versionF, 24), (tagsF, 24)] as [(NSTextField, CGFloat)] {
             f.frame = NSRect(x: pad, y: y, width: w, height: h); y += h + 8
         }
+        catLabel.frame = NSRect(x: pad, y: y + 5, width: 60, height: 16)
+        categoryPop.frame = NSRect(x: pad + 64, y: y, width: 170, height: 26)
+        y += 26 + 4
+        categoryHint.frame = NSRect(x: pad, y: y, width: w, height: 28)
+        y += 28 + 8
         scrollBox?.frame = NSRect(x: pad, y: y, width: w, height: 70); y += 70 + 8
         pkgBtn.frame = NSRect(x: pad, y: y, width: 240, height: 26)
         pkgLabel.frame = NSRect(x: pad + 248, y: y + 5, width: w - 248, height: 16); y += 26 + 8
@@ -437,9 +526,13 @@ final class StoreUploadView: NSView {
         status.frame = NSRect(x: pad, y: y, width: w, height: 16)
     }
 
+    @objc private func categoryChanged() {
+        updateCategoryHint()
+    }
+
     @objc private func choosePkg() {
         let p = NSOpenPanel()
-        p.message = "选择主题包：.zip 主题包，或本机主题所在文件夹"
+        p.message = "选择资源包：.zip 资源包，或本机主题所在文件夹"
         p.canChooseFiles = true; p.canChooseDirectories = true
         p.allowedFileTypes = ["zip"]
         p.allowsMultipleSelection = false
@@ -469,6 +562,7 @@ final class StoreUploadView: NSView {
             version: versionF.stringValue.trimmingCharacters(in: .whitespaces),
             tags: tagsF.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty },
+            category: selectedCategory.rawValue,
             package: package, previews: previews)
         guard !spec.name.isEmpty else { status.stringValue = "请填写主题名称"; return }
         if spec.package == nil { status.stringValue = "请先选择主题包"; return }
@@ -485,11 +579,11 @@ final class StoreUploadWindowController: NSWindowController {
     private var view: StoreUploadView { window!.contentView as! StoreUploadView }
 
     convenience init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 430),
                          styleMask: [.titled], backing: .buffered, defer: false)
-        w.title = "上传主题到商店"
+        w.title = "上传主题 / 资源到商店"
         w.isReleasedWhenClosed = false
-        let v = StoreUploadView(frame: NSRect(x: 0, y: 0, width: 460, height: 360))
+        let v = StoreUploadView(frame: NSRect(x: 0, y: 0, width: 460, height: 430))
         w.contentView = v
         self.init(window: w)
     }

@@ -8,7 +8,7 @@
 - **EFI 识别**：读取本机或已挂载分区的 EFI，识别现有引导项与主题
 - **图标工具**：ICNS ↔ PNG 转换与批量生成启动图标
 - **启动模拟**：主板/固件 Logo → OpenCore Picker（显示当前所选主题）→ 选择 macOS 回车后模拟 `-v` 跑码
-- **主题商店**：在线浏览 / 下载 / 上传主题；服务器不可达时自动回退到内置离线示例
+- **主题商店**：按「完整主题 / 图标区 / 背景区 / 字体区」分类浏览、筛选、下载与上传；服务器不可达时自动回退到内置离线示例
 
 ## 构建
 
@@ -35,6 +35,8 @@ xattr -cr "/Applications/OC Theme Studio.app"
 
 默认服务器地址 `https://mctop.top`（见 `Sources/StoreClient.swift`）。可在商店窗口顶部的「服务器地址」栏覆盖，配置保存在 `~/Library/Application Support/OCThemeStudio/state.json`。
 
+商店支持 4 个分类：**完整主题（默认）、图标区、背景区、字体区**。窗口顶部「分类」下拉会读取服务端 `/api/categories` 显示各分类数量，上传面板可选择资源类型；列表通过 `GET /api/themes?category=...` 过滤。分类只影响商店展示与筛选，不改变 `.zip` 校验规则，纯字体包等资源可下载后手动取用。
+
 `Info.plist` 中 ATS 只允许本地网络 HTTP，公网连接强制 HTTPS；旧版本存的明文 IP 会在启动时自动升级为 HTTPS 域名。
 
 后端是独立仓库：[huangjinkun2006/oc-theme-store](https://github.com/huangjinkun2006/oc-theme-store)（FastAPI + 网页商店 + 一键部署脚本）。
@@ -52,5 +54,6 @@ xattr -cr "/Applications/OC Theme Studio.app"
 
 ## 版本
 
+- **2.2.0**：主题商店新增「完整主题 / 图标区 / 背景区 / 字体区」分类，支持按分类筛选、卡片与详情显示类型、上传时选择资源类型，并同步后端 `/api/categories` 与 `?category=` 过滤。
 - **2.1.1**：修复主题商店窗口因 `windowDidLoad()` 未触发导致列表为空、上传/刷新按钮无响应；改为初始化时显式配置，并持有上传面板控制器。
 - **2.1**：默认商店地址切换为 HTTPS 域名，收紧 ATS。
