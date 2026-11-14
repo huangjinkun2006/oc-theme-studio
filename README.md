@@ -66,6 +66,7 @@ xattr -cr "/Applications/OC Theme Studio.app"
 
 ## 版本
 
+- **2.3.1**：修复「新建主题」文件夹不完整导致开机退回文本选取器的问题。现在「＋ 新建」会从**右侧当前挂载的 EFI 分区**复制其现有的选取框（Selected）、字体（Resources/Font）与标签（Resources/Label）以及当前变体的图标/背景，使新主题一建好就是完整可加载的 OpenCore 主题；未挂载 EFI 时回退到内置默认图。同时 `apply` 在主题没有任何图片资源时不再强行把 `PickerMode` 设为 External（否则 OpenCanopy 加载失败退回文本），并提示缺少字体的情况。
 - **2.3.0**：新增「EFI 配置包」分类。上传时从主窗口所选 EFI 分区生成脱敏配置包（只含 Resources 与 PickerMode / PickerVariant，移除序列号 / MLB / ROM / NVRAM / Kexts / Drivers）；下载后按所选目标分区安装，自动备份并合并 Picker 设置，不覆盖目标机器标识。同时修复 EFI 资源树复制时的目录扁平化问题，上传前加入 200 MB 本地预检。
 - **2.2.0**：主题商店新增「完整主题 / 图标区 / 背景区 / 字体区」分类，支持按分类筛选、卡片与详情显示类型、上传时选择资源类型，并同步后端 `/api/categories` 与 `?category=` 过滤。
 - **2.1.1**：修复主题商店窗口因 `windowDidLoad()` 未触发导致列表为空、上传/刷新按钮无响应；改为初始化时显式配置，并持有上传面板控制器。

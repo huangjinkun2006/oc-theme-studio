@@ -52,10 +52,92 @@ struct ThemePreset {
     }
 }
 
-/// Create a theme, optionally pre-filled from a bundled preset (icons +
-/// background + labels). A nil preset creates the old empty theme.
+private let tvFontExt: Set<String> = ["ttf", "otf", "bin", "pf2"]
+private let tvLabelExt: Set<String> = ["label", "lbl", "l2x", "txt", "strings"]
+
+private func tvStr(_ v: Any?) -> String {
+    if let s = v as? String { return s }
+    if let n = v as? NSNumber { return n.stringValue }
+    return ""
+}
+
+/// Copy the bundled default UI chrome (background / selector / cursor / dot /
+/// focus) into a new theme so its variant directory is never empty.
+private func copyDefaults(into dest: URL) {
+    guard let d = ThemePreset.root?.appendingPathComponent("defaults"), isDir(d) else { return }
+    let fm = FileManager.default
+    guard let items = try? fm.contentsOfDirectory(at: d, includingPropertiesForKeys: nil) else { return }
+    for it in items where !isDir(it) {
+        let dst = dest.appendingPathComponent(it.lastPathComponent)
+        if !fm.fileExists(atPath: dst.path) { try? fm.copyItem(at: it, to: dst) }
+    }
+}
+
+/// Seed a brand-new theme from the EFI currently mounted at `efiMount` so the
+/// folder is already a complete, loadable OpenCore theme: it inherits the
+/// working selection box, the global font and the entry labels. Font / Label
+/// are copied as-is; the active variant's images are flattened into the theme
+/// root (the app re-nests them under the new PickerVariant when applied).
+private func seedFromEFI(_ dir: URL, efiMount: String) {
+    let fm = FileManager.default
+    let res = URL(fileURLWithPath: efiMount).appendingPathComponent("EFI/OC/Resources", isDirectory: true)
+    guard isDir(res) else { return }
+
+    // 1) Global Font + Label, routed by file extension.
+    for (bucket, exts) in [("Font", tvFontExt), ("Label", tvLabelExt)] {
+        let src = res.appendingPathComponent(bucket, isDirectory: true)
+        guard isDir(src) else { continue }
+        guard let items = try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: nil) else { continue }
+        for it in items where !isDir(it) {
+            guard exts.contains(it.pathExtension.lowercased()) else { continue }
+            let dst = dir.appendingPathComponent(it.lastPathComponent)
+            if !fm.fileExists(atPath: dst.path) { try? fm.copyItem(at: it, to: dst) }
+        }
+    }
+
+    // 2) Active variant images, flattened into the theme root.
+    let variant = activeVariant(from: res, mount: efiMount)
+    let img = res.appendingPathComponent("Image").appendingPathComponent(variant, isDirectory: true)
+    guard isDir(img) else { return }
+    guard let en = fm.enumerator(at: img, includingPropertiesForKeys: nil) else { return }
+    for case let u as URL in en where !isDir(u) {
+        let dst = dir.appendingPathComponent(u.lastPathComponent)
+        if !fm.fileExists(atPath: dst.path) { try? fm.copyItem(at: u, to: dst) }
+    }
+}
+
+/// Resolve the variant directory that the EFI's config.plist currently points
+/// at. Falls back to the first variant that actually has images.
+private func activeVariant(from res: URL, mount: String) -> String {
+    let cfg = URL(fileURLWithPath: mount).appendingPathComponent("EFI/OC/config.plist")
+    var fallback = "Acidanthera/GoldenGate"
+    if let data = try? Data(contentsOf: cfg), let pl = plistRead(data) {
+        let boot = (pl["Misc"] as? [String: Any])?["Boot"] as? [String: Any] ?? [:]
+        var v = tvStr(boot["PickerVariant"]).replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if v.isEmpty || v.lowercased() == "auto" { v = fallback }
+        let cand = res.appendingPathComponent("Image").appendingPathComponent(v, isDirectory: true)
+        if isDir(cand) { return v }
+        fallback = v
+    }
+    let image = res.appendingPathComponent("Image", isDirectory: true)
+    guard isDir(image), let subs = try? FileManager.default.contentsOfDirectory(at: image, includingPropertiesForKeys: nil) else { return fallback }
+    for s in subs where isDir(s) {
+        if let kids = try? FileManager.default.contentsOfDirectory(at: s, includingPropertiesForKeys: nil),
+           kids.contains(where: { !isDir($0) }) {
+            return String(s.path.dropFirst(image.path.count + 1))
+        }
+    }
+    return fallback
+}
+
+/// Create a theme. A nil preset creates an empty canvas; a preset pre-fills
+/// bundled icons + background. `efiMount` (the currently mounted EFI) lets the
+/// new theme inherit that EFI's working selection box, font and labels so the
+/// folder is already a complete, loadable OpenCore theme instead of an asset-
+/// less one that makes OpenCanopy fall back to the built-in text picker.
 @discardableResult
-func makeTheme(name: String, preset: ThemePreset?) throws -> Theme {
+func makeTheme(name: String, preset: ThemePreset? = nil, efiMount: String? = nil) throws -> Theme {
     Paths.ensure()
     let fm = FileManager.default
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -68,6 +150,14 @@ func makeTheme(name: String, preset: ThemePreset?) throws -> Theme {
         n += 1
     }
     try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+
+    // 1) Bundled default UI chrome: guarantees a non-empty variant even when no
+    //    EFI is mounted (a blank variant makes OpenCanopy fail to load).
+    copyDefaults(into: dest)
+    // 2) Seed from the mounted EFI so the folder is a complete theme: it keeps
+    //    the working selection box (Selected), font and labels. EFI assets win
+    //    over the bundled defaults on name collision.
+    if let mount = efiMount, !mount.isEmpty { seedFromEFI(dest, efiMount: mount) }
 
     var overrides: [String: String] = [:]
     if let p = preset, let iconDir = ThemePreset.iconsDir {

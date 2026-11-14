@@ -841,7 +841,11 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         let idx = pop.indexOfSelectedItem
         let preset = (idx > 0 && idx - 1 < presets.count) ? presets[idx - 1] : nil
         do {
-            let t = try makeTheme(name: nameField.stringValue, preset: preset)
+            // Seed the new theme from the EFI partition currently selected in
+            // the right-hand list (if mounted) so it inherits the working
+            // picker assets; falls back to bundled defaults otherwise.
+            let t = try makeTheme(name: nameField.stringValue, preset: preset,
+                                  efiMount: selectedPartition?.mountPoint)
             self.reloadLibrary(selectId: t.id)
             self.editSelectedTheme()
             self.root.statusBar.set(preset == nil

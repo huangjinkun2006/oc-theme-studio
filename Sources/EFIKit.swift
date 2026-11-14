@@ -674,6 +674,17 @@ enum EFIActions {
             let imageComps = layout.relative.split(separator: "/").map(String.init)
             let canopyListed = canopyEnabled(pl)
 
+            // A theme with no image assets cannot render the OpenCanopy picker;
+            // forcing PickerMode=External on it makes OpenCore fall back to the
+            // built-in text menu. Keep the existing mode instead and warn.
+            let imageRels = theme.installList("image")
+                .filter { ($0 as NSString).pathExtension.lowercased() != "json" }
+            let hasImages = !imageRels.isEmpty
+            let efiFontDir = oc.appendingPathComponent("Resources/Font", isDirectory: true)
+            let efiHasFont = efiIsDir(efiFontDir)
+                && !((try? FileManager.default.contentsOfDirectory(atPath: efiFontDir.path))?.isEmpty ?? true)
+            let themeHasFont = !theme.installList("font").isEmpty
+
             let buckets: [(String, String)] = [("Image", "image"), ("Font", "font"),
                                                 ("Label", "label"), ("Sound", "sound")]
             for (folder, key) in buckets {
@@ -700,7 +711,7 @@ enum EFIActions {
             // a variant directory we just removed is a classic text-picker bug.
             var misc = asDict(pl["Misc"])
             var boot = asDict(misc["Boot"])
-            if enablePicker { boot["PickerMode"] = "External" }
+            if enablePicker && hasImages { boot["PickerMode"] = "External" }
             boot["PickerVariant"] = layout.config
             misc["Boot"] = boot
             pl["Misc"] = misc
@@ -754,6 +765,12 @@ enum EFIActions {
                 warning = "\n⚠️ EFI/OC/Drivers 缺少 OpenCanopy.efi，图形菜单不会加载。请放入与 OpenCore 同版本的驱动。"
             } else if !canopyListed {
                 warning = "\n⚠️ config.plist 的 UEFI → Drivers 未启用 OpenCanopy.efi，图形菜单不会加载。"
+            }
+            if enablePicker && !hasImages {
+                warning += "\n⚠️ 该主题没有任何图片资源，图形选取器无法加载，已保留原有 PickerMode（请先在编辑器里添加背景与图标，或用「＋ 新建」从 EFI 复制主题）。"
+            }
+            if enablePicker && hasImages && !efiHasFont && !themeHasFont {
+                warning += "\n⚠️ 目标 EFI 与主题都缺少 Resources/Font，启动项文字可能无法显示，请从 OpenCore 复制 Resources/Font 到 EFI。"
             }
             return ActionResult(ok: true,
                                 message: "已把「\(theme.name)」写入 EFI/OC/Resources/Image/\(layout.relative)，"
