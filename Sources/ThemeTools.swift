@@ -73,6 +73,33 @@ private func copyDefaults(into dest: URL) {
     }
 }
 
+/// Fallback font for a brand-new theme when no EFI is mounted. OpenCanopy
+/// requires a real TrueType font to render entry labels; without one the picker
+/// silently falls back to the built-in text menu. We copy a system font the user
+/// is already licensed to use (kept out of the app bundle / DMG so we never
+/// redistribute a copyrighted font). The EFI font from `seedFromEFI` always
+/// wins when present.
+private let systemFontCandidates = [
+    "/System/Library/Fonts/Geneva.ttf",
+    "/System/Library/Fonts/NewYork.ttf",
+    "/System/Library/Fonts/SFCompact.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Verdana.ttf",
+]
+private func seedSystemFont(into dir: URL) {
+    let fm = FileManager.default
+    guard let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+    // Already has a font (e.g. copied from EFI)? Nothing to do.
+    if items.contains(where: { tvFontExt.contains($0.pathExtension.lowercased()) }) { return }
+    for c in systemFontCandidates {
+        let src = URL(fileURLWithPath: c)
+        guard fm.fileExists(atPath: src.path) else { continue }
+        let dst = dir.appendingPathComponent("Font.ttf")
+        try? fm.copyItem(at: src, to: dst)
+        if fm.fileExists(atPath: dst.path) { return }
+    }
+}
+
 /// Seed a brand-new theme from the EFI currently mounted at `efiMount` so the
 /// folder is already a complete, loadable OpenCore theme: it inherits the
 /// working selection box, the global font and the entry labels. Font / Label
@@ -158,6 +185,9 @@ func makeTheme(name: String, preset: ThemePreset? = nil, efiMount: String? = nil
     //    the working selection box (Selected), font and labels. EFI assets win
     //    over the bundled defaults on name collision.
     if let mount = efiMount, !mount.isEmpty { seedFromEFI(dest, efiMount: mount) }
+    // 3) No EFI font available? Pull a system font so OpenCanopy still loads a
+    //    graphical picker (with a selection box) instead of the text menu.
+    seedSystemFont(into: dest)
 
     var overrides: [String: String] = [:]
     if let p = preset, let iconDir = ThemePreset.iconsDir {
