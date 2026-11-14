@@ -108,6 +108,7 @@ final class StoreDetailView: NSView {
         guard let t = theme else {
             nameF.stringValue = ""; authorF.stringValue = ""; tagsF.stringValue = ""
             descF.stringValue = "从左侧选择一个主题查看详情。"
+            downloadBtn.title = "下载主题"; hint.stringValue = ""
             thumb.image = nil; downloadBtn.isEnabled = false; applyBtn.isEnabled = false
             return
         }
@@ -116,6 +117,11 @@ final class StoreDetailView: NSView {
         let cat = "类型：" + t.categoryDisplay
         tagsF.stringValue = t.tags.isEmpty ? cat : cat + "   #" + t.tags.joined(separator: "  #")
         descF.stringValue = t.description
+        let isEFI = t.categoryKind == .efi
+        downloadBtn.title = isEFI ? "下载并安装…" : "下载主题"
+        hint.stringValue = isEFI
+            ? "下载后按主窗口所选 EFI 分区安装，写入前自动备份 Resources 与 config.plist。"
+            : ""
         downloadBtn.isEnabled = true
         if let u = StoreClient.thumbnailURL(for: t) { loadRemoteImage(u, into: thumb) }
     }
@@ -283,6 +289,22 @@ final class StoreView: NSView {
     }
 
     private func finishDownload(_ t: StoreTheme, result: StoreDownloadResult) {
+        // EFI 配置包不进主题库：直接交给主窗口，按用户所选的 EFI 分区安装。
+        if t.categoryKind == .efi {
+            guard case .remote(let zip) = result else {
+                status.stringValue = "EFI 配置包没有可安装的 zip"
+                detail.hint.stringValue = "请重新下载该配置包。"
+                return
+            }
+            status.stringValue = "已下载 EFI 配置包，请在主窗口确认写入所选 EFI 分区。"
+            detail.hint.stringValue = "写入前会自动备份 Resources 与 config.plist。"
+            downloaded[t.id] = nil
+            detail.localTheme = nil
+            listTable.reloadData()
+            AppDelegate.shared?.installEFIConfigPackage(zip)
+            self.window?.orderOut(nil)
+            return
+        }
         do {
             let theme: Theme
             switch result {
@@ -408,6 +430,16 @@ final class StoreWindowController: NSWindowController, NSTableViewDataSource, NS
             self?.upload = nil
         }
         u.onCancel = { [weak self] in self?.upload = nil }
+        u.generateEFIPackage = {
+            guard let app = AppDelegate.shared else {
+                return .failure(StoreError.message("主窗口未就绪，请重新打开上传面板"))
+            }
+            do {
+                return .success(try app.exportEFIConfigPackageForStore())
+            } catch {
+                return .failure(error)
+            }
+        }
         upload = u   // 强引用：否则 sheet 控制器在函数返回后就被释放，回调失效
         u.showSheet(on: w)
     }
@@ -446,6 +478,8 @@ final class StoreUploadView: NSView {
 
     var onUpload: ((StoreClient.UploadSpec) -> Void)?
     var onCancel: (() -> Void)?
+    /// 从主窗口当前选中的 EFI 分区生成脱敏配置包，返回临时 zip。
+    var onGenerateEFI: (() -> Result<URL, Error>)?
     private var package: URL?
     private var previews: [URL] = []
 
@@ -465,9 +499,14 @@ final class StoreUploadView: NSView {
             categoryHint.stringValue = "背景区：把 Background*.png / .icns 打包成 .zip。"
         case .fonts:
             categoryHint.stringValue = "字体区：把 .ttf / .otf 打包成 .zip；纯字体包下载后手动取用。"
+        case .efi:
+            categoryHint.stringValue = "EFI 配置包：从右侧已挂载的 EFI 分区生成，只含 Resources 与脱敏后的 PickerVariant；不会上传序列号 / MLB / ROM / NVRAM。"
         case .all:
             categoryHint.stringValue = ""
         }
+        pkgBtn.title = selectedCategory == .efi
+            ? "从当前 EFI 分区生成…"
+            : "选择资源包（ZIP 或本机主题）…"
     }
 
     override init(frame frameRect: NSRect) {
@@ -527,10 +566,32 @@ final class StoreUploadView: NSView {
     }
 
     @objc private func categoryChanged() {
+        // 切换类型后旧包可能不再适用（尤其 EFI 包与普通主题包结构不同）。
+        package = nil
+        pkgLabel.stringValue = "未选择"
+        pkgLabel.textColor = .secondaryLabelColor
+        status.stringValue = ""
         updateCategoryHint()
     }
 
     @objc private func choosePkg() {
+        if selectedCategory == .efi {
+            guard let gen = onGenerateEFI else {
+                status.stringValue = "生成功能未就绪，请从主窗口重新打开上传面板"
+                return
+            }
+            status.stringValue = "正在从所选 EFI 分区读取并生成脱敏配置包…"
+            switch gen() {
+            case .success(let u):
+                package = u
+                pkgLabel.stringValue = u.lastPathComponent
+                pkgLabel.textColor = .labelColor
+                status.stringValue = "已生成 EFI 配置包（不含机器标识）"
+            case .failure(let e):
+                status.stringValue = "生成失败：\(e.localizedDescription)"
+            }
+            return
+        }
         let p = NSOpenPanel()
         p.message = "选择资源包：.zip 资源包，或本机主题所在文件夹"
         p.canChooseFiles = true; p.canChooseDirectories = true
@@ -565,7 +626,18 @@ final class StoreUploadView: NSView {
             category: selectedCategory.rawValue,
             package: package, previews: previews)
         guard !spec.name.isEmpty else { status.stringValue = "请填写主题名称"; return }
-        if spec.package == nil { status.stringValue = "请先选择主题包"; return }
+        if spec.package == nil {
+            status.stringValue = selectedCategory == .efi
+                ? "请先从当前 EFI 分区生成配置包" : "请先选择资源包"
+            return
+        }
+        if let p = spec.package,
+           let attr = try? FileManager.default.attributesOfItem(atPath: p.path),
+           let n = attr[.size] as? NSNumber,
+           n.doubleValue > 200 * 1024 * 1024 {
+            status.stringValue = "资源包超过 200 MB 上限，请精简后重试"
+            return
+        }
         status.stringValue = "正在上传…"
         onUpload?(spec)
     }
@@ -576,6 +648,8 @@ final class StoreUploadView: NSView {
 final class StoreUploadWindowController: NSWindowController {
     var onSubmitted: (() -> Void)?
     var onCancel: (() -> Void)?
+    /// 从主窗口当前 EFI 分区生成脱敏配置包（返回临时 zip）。
+    var generateEFIPackage: (() -> Result<URL, Error>)?
     private var view: StoreUploadView { window!.contentView as! StoreUploadView }
 
     convenience init() {
@@ -597,6 +671,7 @@ final class StoreUploadWindowController: NSWindowController {
             parent.endSheet(sheet, returnCode: .cancel)
             self.onCancel?()
         }
+        view.onGenerateEFI = generateEFIPackage
         parent.beginSheet(window!, completionHandler: nil)
     }
 

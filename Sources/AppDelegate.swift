@@ -379,4 +379,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applyThemeFromStore(_ theme: Theme) {
         mainWindow?.applyThemeFromStore(theme)
     }
+
+    /// 商店上传：从主窗口当前选中的 EFI 分区生成脱敏配置包。
+    func exportEFIConfigPackageForStore() throws -> URL {
+        guard let w = mainWindow else { throw AppError.message("主窗口未就绪") }
+        return try w.exportEFIConfigPackageForStore()
+    }
+
+    /// 商店下载：把 EFI 配置包交给主窗口，按用户所选分区安装。
+    func installEFIConfigPackage(_ zip: URL) {
+        mainWindow?.installEFIConfigPackage(zip)
+    }
 }

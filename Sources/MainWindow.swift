@@ -904,6 +904,56 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         }
     }
 
+    // MARK: EFI 配置包（商店上传 / 安装）
+
+    /// 从主窗口当前选中的已挂载 EFI 分区生成脱敏配置包，供商店上传。
+    func exportEFIConfigPackageForStore() throws -> URL {
+        guard let p = selectedPartition, p.mounted else {
+            throw AppError.message("请先在右侧「EFI 分区」选择并挂载一个分区")
+        }
+        Paths.ensure()
+        let dest = Paths.scratch.appendingPathComponent(
+            "efi_config_" + UUID().uuidString + ".zip")
+        return try EFIActions.makeConfigPackage(device: p.device,
+                                                mount: p.mountPoint, to: dest)
+    }
+
+    /// 下载 EFI 配置包后，按主窗口当前选中的 EFI 分区安装。
+    func installEFIConfigPackage(_ zip: URL) {
+        guard let p = selectedPartition, p.mounted else {
+            showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            notify("未挂载 EFI 分区",
+                   "EFI 配置包已下载到本机。请先在右侧 EFI 分区「挂载」一个分区，再重新下载安装。")
+            return
+        }
+        showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let text = """
+        即将把下载的 EFI 配置包写入 \(p.device)（\(p.mountPoint)）的 EFI/OC/Resources。
+
+        只会安装包内的主题资源，并把 PickerMode / PickerVariant 合并进本机现有的 config.plist；
+        不会覆盖 PlatformInfo / NVRAM / Kexts / Drivers 等机器相关配置。
+        写入前会自动备份现有 Resources 与 config.plist；此操作需要管理员密码并会修改引导分区。
+        """
+        confirm("确认写入 EFI 配置包", text, ok: "写入配置包", danger: true) {
+            self.runBusy("正在写入 EFI 配置包（可能需要管理员授权）…", {
+                EFIActions.installConfigPackage(zip: zip, device: p.device,
+                                                mount: p.mountPoint)
+            }) { (r: ActionResult) in
+                self.reloadBackups()
+                self.refreshInspect()
+                if r.ok {
+                    self.notify("安装成功", r.message + "\n备份编号：" + r.backupId)
+                } else {
+                    self.notify("安装失败", r.message +
+                        (r.backupId.isEmpty ? "" : "\n已保留备份：" + r.backupId),
+                                critical: true)
+                }
+            }
+        }
+    }
+
     // MARK: Library actions / context menu
 
     /// Theme a context-menu action should target. A right-click selects the row

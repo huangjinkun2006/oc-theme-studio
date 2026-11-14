@@ -8,7 +8,8 @@ import AppKit
 // offline catalog of demo themes so the UI is never empty. Everything is
 // dependency-free (URLSession).
 
-/// 商店分类：完整主题为默认类型；图标区 / 背景区 / 字体区用于分享单类资源。
+/// 商店分类：完整主题为默认类型；图标区 / 背景区 / 字体区用于分享单类资源，
+/// EFI 配置包由已挂载分区生成（脱敏）并按目标分区安装。
 /// slug 与后端 `store_server.py` 的 CATEGORIES 保持一致。
 enum StoreCategory: String {
     case all = "all"
@@ -16,6 +17,7 @@ enum StoreCategory: String {
     case icons = "icons"
     case background = "background"
     case fonts = "fonts"
+    case efi = "efi"
 
     var label: String {
         switch self {
@@ -24,11 +26,12 @@ enum StoreCategory: String {
         case .icons: return "图标区"
         case .background: return "背景区"
         case .fonts: return "字体区"
+        case .efi: return "EFI 配置包"
         }
     }
 
-    static let selectable: [StoreCategory] = [.all, .theme, .icons, .background, .fonts]
-    static let uploadable: [StoreCategory] = [.theme, .icons, .background, .fonts]
+    static let selectable: [StoreCategory] = [.all, .theme, .icons, .background, .fonts, .efi]
+    static let uploadable: [StoreCategory] = [.theme, .icons, .background, .fonts, .efi]
 }
 
 struct StoreTheme: Codable, Identifiable {

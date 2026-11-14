@@ -35,7 +35,19 @@ xattr -cr "/Applications/OC Theme Studio.app"
 
 默认服务器地址 `https://mctop.top`（见 `Sources/StoreClient.swift`）。可在商店窗口顶部的「服务器地址」栏覆盖，配置保存在 `~/Library/Application Support/OCThemeStudio/state.json`。
 
-商店支持 4 个分类：**完整主题（默认）、图标区、背景区、字体区**。窗口顶部「分类」下拉会读取服务端 `/api/categories` 显示各分类数量，上传面板可选择资源类型；列表通过 `GET /api/themes?category=...` 过滤。分类只影响商店展示与筛选，不改变 `.zip` 校验规则，纯字体包等资源可下载后手动取用。
+商店支持 5 个分类：**完整主题（默认）、图标区、背景区、字体区、EFI 配置包**。窗口顶部「分类」下拉会读取服务端 `/api/categories` 显示各分类数量，上传面板可选择资源类型；列表通过 `GET /api/themes?category=...` 过滤。分类只影响商店展示与筛选，不改变 `.zip` 校验规则，纯字体包等资源可下载后手动取用。
+
+### EFI 配置包（按分区上传 / 安装）
+
+上传什么文件由**主窗口当前所选的 EFI 分区**决定：在商店上传面板把类型选为「EFI 配置包」后，按钮变为「从当前 EFI 分区生成…」，不再弹出文件选择框。App 直接读取该分区 `EFI/OC/Resources` 与 `config.plist`，生成可公开分享的脱敏包：
+
+- 包内含 `oc-efi-manifest.json`、`EFI/OC/Resources`、`EFI/OC/config.plist` 的**最小版本**（只保留 `Misc → Boot → PickerMode / PickerVariant`）。
+- 明确排除 `PlatformInfo`（序列号 / MLB / ROM / UUID）、`NVRAM`、`ACPI`、`Kernel`/Kexts、`Drivers`、`Tools`、`UEFI`、`DeviceProperties`、`Booter`。
+- 网页手动上传的 EFI 包也必须带 `oc-efi-manifest.json`，否则 App 会拒绝安装。
+
+安装同样按**主窗口当前所选的 EFI 分区**：EFI 分类的详情按钮是「下载并安装…」，下载后不进主题库，而是弹出确认框写入所选分区。安装只覆盖 `Resources/Image/<PickerVariant>` 与 `Font / Label / Sound`，并把 `PickerMode / PickerVariant` 合并进目标机自己的 `config.plist`，**不会覆盖目标机器的序列号、NVRAM、Kexts、Drivers**。写入前自动备份 `Resources` 与 `config.plist`，可在「备份」中一键还原。
+
+> 使用前请先在右侧「EFI 分区」列表选择并挂载目标分区；未挂载时 App 会提示先挂载。写入需要管理员授权。
 
 `Info.plist` 中 ATS 只允许本地网络 HTTP，公网连接强制 HTTPS；旧版本存的明文 IP 会在启动时自动升级为 HTTPS 域名。
 
@@ -54,6 +66,7 @@ xattr -cr "/Applications/OC Theme Studio.app"
 
 ## 版本
 
+- **2.3.0**：新增「EFI 配置包」分类。上传时从主窗口所选 EFI 分区生成脱敏配置包（只含 Resources 与 PickerMode / PickerVariant，移除序列号 / MLB / ROM / NVRAM / Kexts / Drivers）；下载后按所选目标分区安装，自动备份并合并 Picker 设置，不覆盖目标机器标识。同时修复 EFI 资源树复制时的目录扁平化问题，上传前加入 200 MB 本地预检。
 - **2.2.0**：主题商店新增「完整主题 / 图标区 / 背景区 / 字体区」分类，支持按分类筛选、卡片与详情显示类型、上传时选择资源类型，并同步后端 `/api/categories` 与 `?category=` 过滤。
 - **2.1.1**：修复主题商店窗口因 `windowDidLoad()` 未触发导致列表为空、上传/刷新按钮无响应；改为初始化时显式配置，并持有上传面板控制器。
 - **2.1**：默认商店地址切换为 HTTPS 域名，收紧 ATS。
