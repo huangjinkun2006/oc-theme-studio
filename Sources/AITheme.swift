@@ -39,6 +39,34 @@ enum AIIconStyle: String, CaseIterable {
     }
 }
 
+/// Wallpaper treatment. `plain` is the old flat gradient, kept as an explicit
+/// opt-in; everything else draws a real scene so the background is not just a
+/// solid colour.
+enum AIBackgroundStyle: String, CaseIterable {
+    case auto, mountains, aurora, grid, mist, plain
+
+    var title: String {
+        switch self {
+        case .auto:      return "自动（有画面，跟随主题风格）"
+        case .mountains: return "山峦剪影 · 远山与薄雾"
+        case .aurora:    return "极光光带 · 星云"
+        case .grid:      return "透视网格 · 霓虹落日"
+        case .mist:      return "柔光雾面 · 光斑"
+        case .plain:     return "纯色渐变 · 无图案"
+        }
+    }
+    var short: String {
+        switch self {
+        case .auto:      return "自动场景"
+        case .mountains: return "山峦剪影"
+        case .aurora:    return "极光光带"
+        case .grid:      return "透视网格"
+        case .mist:      return "柔光雾面"
+        case .plain:     return "纯色渐变"
+        }
+    }
+}
+
 struct AIThemeDesign {
     var name = "AI 主题"
     var style = "极光"
@@ -55,6 +83,8 @@ struct AIThemeDesign {
     var restyleIcons = true
     /// auto / badge / glass / neon / ring / plain
     var iconStyle = "auto"
+    /// auto / mountains / aurora / grid / mist / plain
+    var backgroundStyle = "auto"
     var brightness: Double = 0
     var seed: UInt64 = 1
     var engine = "本地智能引擎"
@@ -73,9 +103,22 @@ struct AIThemeDesign {
     var iconStyleName: String {
         AIIconStyle(rawValue: resolvedIconStyle)?.short ?? "圆角徽章"
     }
+    /// Resolve `auto` into a concrete wallpaper scene based on the style.
+    var resolvedBackgroundStyle: String {
+        if backgroundStyle != "auto" { return backgroundStyle }
+        switch style {
+        case "赛博霓虹", "蒸汽波", "电竞": return "grid"
+        case "极光", "深空宇宙":           return "aurora"
+        case "极简", "单色灰":             return "mist"
+        default:                            return "mountains"
+        }
+    }
+    var backgroundStyleName: String {
+        AIBackgroundStyle(rawValue: resolvedBackgroundStyle)?.short ?? "山峦剪影"
+    }
     var summary: String {
         let icons = restyleIcons ? "主题配色图标 · \(iconStyleName)" : "原样系统图标"
-        return "\(style) · \(decorationName) · \(iconSetName) · \(icons)"
+        return "\(style) · \(decorationName) · \(iconSetName) · \(backgroundStyleName) · \(icons)"
     }
     var decorationName: String {
         switch decoration {
@@ -325,6 +368,24 @@ enum AIThemeEngine {
             d.iconStyle = "plain"
         }
         if low.contains("自动图标风格") { d.iconStyle = "auto" }
+        // Background: plain is an explicit opt-in, never the default.
+        if low.contains("纯色背景") || low.contains("纯色壁纸") || low.contains("简洁背景")
+            || low.contains("不要背景图案") || low.contains("素色背景") {
+            d.backgroundStyle = "plain"
+        }
+        if low.contains("山峦背景") || low.contains("山水背景") || low.contains("远山背景") {
+            d.backgroundStyle = "mountains"
+        }
+        if low.contains("极光背景") || low.contains("星云背景") {
+            d.backgroundStyle = "aurora"
+        }
+        if low.contains("网格背景") || low.contains("透视背景") || low.contains("霓虹落日") {
+            d.backgroundStyle = "grid"
+        }
+        if low.contains("雾面背景") || low.contains("柔和背景") || low.contains("光斑背景") {
+            d.backgroundStyle = "mist"
+        }
+        if low.contains("自动背景") { d.backgroundStyle = "auto" }
         d.name = extractName(p) ?? "\(style.name) · \(suffixes[Int(rng.range(0, CGFloat(suffixes.count))) % suffixes.count])"
         return d
     }
@@ -351,8 +412,8 @@ enum AIThemeEngine {
 
     private static let systemPrompt = """
     你是 OpenCore 启动菜单主题设计师。用户会用中文描述想要的风格，请输出严格 JSON（不要 markdown 代码块、不要解释），字段：
-    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","restyleIcons":true,"iconStyle":"auto|badge|glass|neon|ring|plain"}
-    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。restyleIcons 为 true 时把原有系统图标按主题配色重新着色（保留造型），false 时使用原样图标。iconStyle 决定图标风格：auto 跟随整体风格，badge 圆角渐变底牌，glass 玻璃拟态，neon 霓虹发光，ring 圆形光环，plain 只染色不加装饰。整体要协调且符合用户描述。
+    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","restyleIcons":true,"iconStyle":"auto|badge|glass|neon|ring|plain","backgroundStyle":"auto|mountains|aurora|grid|mist|plain"}
+    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。restyleIcons 为 true 时把原有系统图标按主题配色重新着色（保留造型），false 时使用原样图标。iconStyle 决定图标风格：auto 跟随整体风格，badge 圆角渐变底牌，glass 玻璃拟态，neon 霓虹发光，ring 圆形光环，plain 只染色不加装饰。backgroundStyle 决定壁纸画面：auto 跟随整体风格（默认有画面），mountains 山峦剪影，aurora 极光光带，grid 透视网格与霓虹落日，mist 柔光雾面，plain 纯色渐变无图案。除非用户明确要纯色，不要选 plain。整体要协调且符合用户描述。
     """
 
     /// Parse the model's free-form reply into a design. Tolerates markdown
@@ -382,6 +443,10 @@ enum AIThemeEngine {
         else if let b = obj["monochromeIcons"] as? Bool { d.restyleIcons = b }
         if let s = obj["iconStyle"] as? String,
            AIIconStyle.allCases.map({ $0.rawValue }).contains(s) { d.iconStyle = s }
+        if let s = obj["backgroundStyle"] as? String,
+           AIBackgroundStyle.allCases.map({ $0.rawValue }).contains(s) {
+            d.backgroundStyle = s
+        }
         d.fromLLM = true
         d.engine = "大模型 · \(model)"
         return d
@@ -466,28 +531,33 @@ enum AIThemeRenderer {
             let W = sz.width, H = sz.height
             let shift = CGFloat(d.brightness)
             let p = d.palette
-            let c0 = aiAdjust(p[0], delta: shift)
-            let c1 = aiAdjust(p[1], delta: shift)
-            let c2 = aiAdjust(p[2], delta: shift)
             let cs = CGColorSpaceCreateDeviceRGB()
-            let grad = CGGradient(colorsSpace: cs, colors: [c0, c1, c2] as CFArray,
+            let grad = CGGradient(colorsSpace: cs,
+                                  colors: [aiAdjust(p[0], delta: shift),
+                                           aiAdjust(p[1], delta: shift),
+                                           aiAdjust(p[2], delta: shift)] as CFArray,
                                   locations: [0, 0.52, 1])!
             ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: H),
                                    end: CGPoint(x: W, y: 0), options: [])
 
             var rng = AIRandom(d.seed)
-            let glowA = aiCGColor(d.glow, alpha: 0.42)
-            let glowB = aiCGColor(d.glow, alpha: 0)
-            let g = CGGradient(colorsSpace: cs, colors: [glowA, glowB] as CFArray,
-                               locations: [0, 1])!
-            let cA = CGPoint(x: W * rng.range(0.15, 0.45), y: H * rng.range(0.35, 0.75))
-            let cB = CGPoint(x: W * rng.range(0.6, 0.9), y: H * rng.range(0.2, 0.7))
-            ctx.drawRadialGradient(g, startCenter: cA, startRadius: 0,
-                                   endCenter: cA, endRadius: W * 0.55, options: [])
-            ctx.drawRadialGradient(g, startCenter: cB, startRadius: 0,
-                                   endCenter: cB, endRadius: W * 0.42, options: [])
+            // `plain` is the old flat look, now an explicit opt-in.
+            if d.resolvedBackgroundStyle != "plain" {
+                let glowA = aiCGColor(d.glow, alpha: 0.42)
+                let glowB = aiCGColor(d.glow, alpha: 0)
+                let g = CGGradient(colorsSpace: cs, colors: [glowA, glowB] as CFArray,
+                                   locations: [0, 1])!
+                let cA = CGPoint(x: W * rng.range(0.15, 0.45), y: H * rng.range(0.35, 0.75))
+                let cB = CGPoint(x: W * rng.range(0.6, 0.9), y: H * rng.range(0.2, 0.7))
+                ctx.drawRadialGradient(g, startCenter: cA, startRadius: 0,
+                                       endCenter: cA, endRadius: W * 0.55, options: [])
+                ctx.drawRadialGradient(g, startCenter: cB, startRadius: 0,
+                                       endCenter: cB, endRadius: W * 0.42, options: [])
 
-            drawDecoration(d, ctx: ctx, size: sz, rng: &rng)
+                drawScene(d.resolvedBackgroundStyle, d, ctx: ctx, size: sz, rng: &rng)
+                drawDecoration(d, ctx: ctx, size: sz, rng: &rng)
+                drawGrain(ctx, W: W, H: H, rng: &rng)
+            }
 
             // Vignette keeps white boot icons readable near the edges.
             let clear = NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0).cgColor
@@ -497,6 +567,224 @@ enum AIThemeRenderer {
             let center = CGPoint(x: W / 2, y: H / 2)
             ctx.drawRadialGradient(vig, startCenter: center, startRadius: 0,
                                    endCenter: center, endRadius: W * 0.78, options: [])
+        }
+    }
+
+    /// A real, procedurally drawn scene so the wallpaper is not just a solid
+    /// gradient. All geometry stays low-contrast and below the icon row so the
+    /// boot picker labels remain readable.
+    private static func drawScene(_ kind: String, _ d: AIThemeDesign,
+                                  ctx: CGContext, size: CGSize,
+                                  rng: inout AIRandom) {
+        let W = size.width, H = size.height
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let transparent = aiCGColor(d.glow, alpha: 0)
+
+        switch kind {
+        case "mountains":
+            // Distant moon / halo.
+            let mx = W * rng.range(0.66, 0.86), my = H * rng.range(0.66, 0.80)
+            let halo = CGGradient(colorsSpace: cs,
+                                  colors: [aiCGColor(d.accent, alpha: 0.22),
+                                           transparent] as CFArray,
+                                  locations: [0, 1])!
+            ctx.drawRadialGradient(halo, startCenter: CGPoint(x: mx, y: my),
+                                   startRadius: 0,
+                                   endCenter: CGPoint(x: mx, y: my),
+                                   endRadius: H * 0.42, options: [])
+            ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.10).cgColor)
+            ctx.fillEllipse(in: CGRect(x: mx - 44, y: my - 44, width: 88, height: 88))
+
+            // Four ridges, far (high, hazy) to near (low, dark).
+            for i in 0..<4 {
+                let t = CGFloat(i)
+                let base = H * (0.31 - 0.062 * t)
+                let amp = H * (0.030 + 0.014 * t)
+                let phase = rng.range(0, 6)
+                let fill = cg(mix(rgb(d.palette[2]),
+                                  rgb(d.glow), 0.13 - 0.03 * t), alpha: 0.92)
+                ctx.beginPath()
+                ctx.move(to: CGPoint(x: 0, y: 0))
+                var x: CGFloat = 0
+                while x <= W + 12 {
+                    let y = base + sin(x / 265 + phase) * amp
+                              + sin(x / 96 + phase * 1.7) * amp * 0.34
+                    ctx.addLine(to: CGPoint(x: x, y: y))
+                    x += 12
+                }
+                ctx.addLine(to: CGPoint(x: W, y: 0))
+                ctx.closePath()
+                ctx.setFillColor(fill)
+                ctx.fillPath()
+                // A hairline of accent on each ridge reads as atmospheric haze.
+                ctx.beginPath()
+                x = 0
+                while x <= W + 12 {
+                    let y = base + sin(x / 265 + phase) * amp
+                              + sin(x / 96 + phase * 1.7) * amp * 0.34
+                    if x == 0 { ctx.move(to: CGPoint(x: x, y: y)) }
+                    else { ctx.addLine(to: CGPoint(x: x, y: y)) }
+                    x += 12
+                }
+                ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.10 + 0.03 * t))
+                ctx.setLineWidth(1.5)
+                ctx.strokePath()
+            }
+            // Low fog bands blend the ridges into the wallpaper.
+            for i in 0..<3 {
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.022).cgColor)
+                ctx.fill(CGRect(x: 0, y: H * (0.12 + 0.09 * CGFloat(i)),
+                                width: W, height: H * 0.055))
+            }
+
+        case "aurora":
+            for _ in 0..<5 {
+                let x0 = W * rng.range(0.08, 0.88)
+                let w = W * rng.range(0.11, 0.26)
+                let phase = rng.range(0, 6)
+                let bend = W * rng.range(0.03, 0.09)
+                ctx.saveGState()
+                ctx.setBlendMode(.screen)
+                ctx.beginPath()
+                var y: CGFloat = -20
+                while y <= H + 20 {
+                    let cx = x0 + sin(y / 190 + phase) * bend
+                    if y <= -20 { ctx.move(to: CGPoint(x: cx - w / 2, y: y)) }
+                    else { ctx.addLine(to: CGPoint(x: cx - w / 2, y: y)) }
+                    y += 22
+                }
+                y = H + 20
+                while y >= -20 {
+                    let cx = x0 + sin(y / 190 + phase) * bend
+                    ctx.addLine(to: CGPoint(x: cx + w / 2, y: y))
+                    y -= 22
+                }
+                ctx.closePath()
+                ctx.clip()
+                let band = CGGradient(colorsSpace: cs,
+                                      colors: [transparent,
+                                               aiCGColor(d.accent, alpha: 0.30),
+                                               aiCGColor(d.glow, alpha: 0.16),
+                                               transparent] as CFArray,
+                                      locations: [0, 0.35, 0.68, 1])!
+                ctx.drawLinearGradient(band, start: CGPoint(x: 0, y: 0),
+                                       end: CGPoint(x: 0, y: H), options: [])
+                ctx.restoreGState()
+            }
+            // Brighter foreground stars.
+            for _ in 0..<70 {
+                let x = rng.range(0, W), y = rng.range(H * 0.25, H)
+                let r = rng.range(0.8, 2.2)
+                ctx.setFillColor(NSColor(calibratedWhite: 1,
+                                         alpha: CGFloat(0.20 + rng.next() * 0.45)).cgColor)
+                ctx.fillEllipse(in: CGRect(x: x - r, y: y - r,
+                                           width: r * 2, height: r * 2))
+            }
+
+        case "grid":
+            // Neon sun disc with horizontal cut-outs, above the icon row.
+            let sx = W * 0.5, sy = H * 0.70, r = H * 0.155
+            let halo = CGGradient(colorsSpace: cs,
+                                  colors: [aiCGColor(d.accent, alpha: 0.28),
+                                           transparent] as CFArray,
+                                  locations: [0, 1])!
+            ctx.drawRadialGradient(halo, startCenter: CGPoint(x: sx, y: sy),
+                                   startRadius: 0,
+                                   endCenter: CGPoint(x: sx, y: sy),
+                                   endRadius: r * 2.4, options: [])
+            ctx.saveGState()
+            ctx.addEllipse(in: CGRect(x: sx - r, y: sy - r, width: r * 2, height: r * 2))
+            ctx.clip()
+            let sun = CGGradient(colorsSpace: cs,
+                                 colors: [aiCGColor(d.accent, alpha: 0.55),
+                                          aiCGColor(d.glow, alpha: 0.32)] as CFArray,
+                                 locations: [0, 1])!
+            ctx.drawLinearGradient(sun, start: CGPoint(x: sx, y: sy + r),
+                                   end: CGPoint(x: sx, y: sy - r), options: [])
+            ctx.setBlendMode(.destinationOut)
+            for i in 0..<7 {
+                let y = sy - r * 0.12 - CGFloat(i) * r * 0.15
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 1).cgColor)
+                ctx.fill(CGRect(x: sx - r, y: y, width: r * 2,
+                                height: 3 + CGFloat(i) * 1.5))
+            }
+            ctx.restoreGState()
+
+            // Perspective floor: vanishing rays + rows that widen downwards.
+            let hy = H * 0.40
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.30))
+            ctx.setLineWidth(1.5)
+            ctx.beginPath()
+            for i in -12...12 {
+                ctx.move(to: CGPoint(x: sx, y: hy))
+                ctx.addLine(to: CGPoint(x: sx + CGFloat(i) * W * 0.11, y: 0))
+            }
+            ctx.strokePath()
+            ctx.beginPath()
+            for i in 1...12 {
+                let t = CGFloat(i) / 12
+                let y = hy * (1 - pow(t, 1.7))
+                ctx.move(to: CGPoint(x: 0, y: y))
+                ctx.addLine(to: CGPoint(x: W, y: y))
+            }
+            ctx.strokePath()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.55))
+            ctx.setLineWidth(2.5)
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: 0, y: hy)); ctx.addLine(to: CGPoint(x: W, y: hy))
+            ctx.strokePath()
+
+        case "mist":
+            // Restrained, but still a picture: layered bokeh + fog + a soft
+            // diagonal light shaft. Kept for 极简 / 单色灰.
+            for _ in 0..<10 {
+                let c = CGPoint(x: rng.range(0, W), y: rng.range(H * 0.18, H * 0.95))
+                let rr = rng.range(H * 0.12, H * 0.34)
+                let g = CGGradient(colorsSpace: cs,
+                                   colors: [aiCGColor(d.glow, alpha: 0.26),
+                                            transparent] as CFArray,
+                                   locations: [0, 1])!
+                ctx.drawRadialGradient(g, startCenter: c, startRadius: 0,
+                                       endCenter: c, endRadius: rr, options: [])
+            }
+            for _ in 0..<7 {
+                let x = rng.range(W * 0.08, W * 0.92)
+                let y = rng.range(H * 0.20, H * 0.88)
+                let r = rng.range(18, 74)
+                ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.055).cgColor)
+                ctx.setLineWidth(1.5)
+                ctx.strokeEllipse(in: CGRect(x: x - r, y: y - r,
+                                             width: r * 2, height: r * 2))
+            }
+            let shaft = CGGradient(colorsSpace: cs,
+                                   colors: [transparent,
+                                            NSColor(calibratedWhite: 1, alpha: 0.055).cgColor,
+                                            transparent] as CFArray,
+                                   locations: [0, 0.5, 1])!
+            ctx.drawLinearGradient(shaft,
+                                   start: CGPoint(x: W * 0.10, y: H * 0.95),
+                                   end: CGPoint(x: W * 0.72, y: H * 0.15),
+                                   options: [])
+            for i in 0..<4 {
+                ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.035).cgColor)
+                ctx.fill(CGRect(x: 0, y: H * (0.16 + 0.17 * CGFloat(i)),
+                                width: W, height: H * 0.055))
+            }
+
+        default:
+            break
+        }
+    }
+
+    /// Fine film grain keeps large gradients from reading as flat solid colour.
+    private static func drawGrain(_ ctx: CGContext, W: CGFloat, H: CGFloat,
+                                  rng: inout AIRandom) {
+        for _ in 0..<1500 {
+            let x = rng.range(0, W), y = rng.range(0, H)
+            let light = rng.next() > 0.5
+            let a = CGFloat(0.015 + rng.next() * 0.045)
+            ctx.setFillColor(NSColor(calibratedWhite: light ? 1 : 0, alpha: a).cgColor)
+            ctx.fill(CGRect(x: x, y: y, width: 1.3, height: 1.3))
         }
     }
 

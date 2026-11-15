@@ -88,6 +88,8 @@ final class AIThemeRootView: NSView {
     let restyleChk = UI.checkbox("图标按主题改造", on: true)
     let iconStyleLbl = UI.label("图标风格", size: 11, color: .secondaryLabelColor)
     let iconStylePopup = NSPopUpButton()
+    let bgStyleLbl = UI.label("背景画面", size: 11, color: .secondaryLabelColor)
+    let bgStylePopup = NSPopUpButton()
 
     let aiTitle = UI.section("AI 增强 · 可选")
     let llmChk = UI.checkbox("使用大模型理解提示词", on: false)
@@ -136,6 +138,8 @@ final class AIThemeRootView: NSView {
         iconPopup.addItems(withTitles: ["标准 8 图标", "极简 4 图标", "多发行版 10 图标", "全量 15 图标"])
         iconStylePopup.addItems(withTitles: AIIconStyle.allCases.map { $0.title })
         iconStylePopup.toolTip = "在原有系统图标造型上叠加不同风格；「自动」会跟随壁纸风格选择。"
+        bgStylePopup.addItems(withTitles: AIBackgroundStyle.allCases.map { $0.title })
+        bgStylePopup.toolTip = "默认「自动」会画出真实场景背景；想要干净的纯色就选最后一项「纯色渐变」。"
         llmNote.stringValue = "未启用大模型时由本地智能引擎解析提示词，完全离线可用。"
 
         previewImage.imageScaling = .scaleProportionallyUpOrDown
@@ -149,6 +153,7 @@ final class AIThemeRootView: NSView {
 
         var views: [NSView] = [promptTitle, promptScroll, styleTitle, optionTitle,
                               iconPopup, restyleChk, iconStyleLbl, iconStylePopup,
+                              bgStyleLbl, bgStylePopup,
                               aiTitle, llmChk, settingsBtn, llmNote,
                               previewTitle, previewImage, nameF, infoF, swatchTitle,
                               engineF, bottomLine, statusF, inspireBtn, generateBtn,
@@ -182,10 +187,12 @@ final class AIThemeRootView: NSView {
         restyleChk.frame = NSRect(x: pad + 200, y: top + 359, width: leftW - 200, height: 20)
         iconStyleLbl.frame = NSRect(x: pad, y: top + 392, width: 70, height: 20)
         iconStylePopup.frame = NSRect(x: pad + 72, y: top + 388, width: leftW - 72, height: 26)
-        aiTitle.frame = NSRect(x: pad, y: top + 426, width: leftW, height: 15)
-        llmChk.frame = NSRect(x: pad, y: top + 446, width: 190, height: 20)
-        settingsBtn.frame = NSRect(x: pad + 200, y: top + 444, width: 110, height: 24)
-        llmNote.frame = NSRect(x: pad, y: top + 474, width: leftW, height: 34)
+        bgStyleLbl.frame = NSRect(x: pad, y: top + 426, width: 70, height: 20)
+        bgStylePopup.frame = NSRect(x: pad + 72, y: top + 422, width: leftW - 72, height: 26)
+        aiTitle.frame = NSRect(x: pad, y: top + 460, width: leftW, height: 15)
+        llmChk.frame = NSRect(x: pad, y: top + 480, width: 190, height: 20)
+        settingsBtn.frame = NSRect(x: pad + 200, y: top + 478, width: 110, height: 24)
+        llmNote.frame = NSRect(x: pad, y: top + 508, width: leftW, height: 34)
         llmNote.lineBreakMode = .byWordWrapping
         llmNote.maximumNumberOfLines = 2
 
@@ -275,6 +282,8 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         r.restyleChk.toolTip = "保留原有系统图标造型（Apple / Windows / Linux 等），按当前主题配色重新着色；取消勾选则原样使用内置 ICNS。"
         r.iconStylePopup.target = self
         r.iconStylePopup.action = #selector(optionChanged)
+        r.bgStylePopup.target = self
+        r.bgStylePopup.action = #selector(optionChanged)
         updateLLMLabels()
         inspire()
     }
@@ -299,7 +308,8 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         r.nameF.stringValue = d.name
         r.infoF.stringValue = "风格「\(d.style)」 · \(d.decorationName) · \(d.iconSetName)"
             + "\n" + d.summary
-            + (d.restyleIcons ? "（图标风格：\(d.iconStyleName)）" : "")
+            + "（背景：\(d.backgroundStyleName)"
+            + (d.restyleIcons ? " · 图标：\(d.iconStyleName)" : "") + "）"
         let colors = d.palette + [d.accent, d.glow]
         for (i, v) in r.swatches.enumerated() where i < colors.count {
             v.layer?.backgroundColor = aiNSColor(colors[i]).cgColor
@@ -326,6 +336,8 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         let styles = AIIconStyle.allCases.map { $0.rawValue }
         r.iconStylePopup.selectItem(at: styles.firstIndex(of: design.iconStyle) ?? 0)
         r.iconStylePopup.isEnabled = design.restyleIcons
+        let bgs = AIBackgroundStyle.allCases.map { $0.rawValue }
+        r.bgStylePopup.selectItem(at: bgs.firstIndex(of: design.backgroundStyle) ?? 0)
     }
 
     private func generate(prompt: String, allowLLM: Bool = true) {
@@ -386,6 +398,9 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         let styles = AIIconStyle.allCases.map { $0.rawValue }
         let i = root.iconStylePopup.indexOfSelectedItem
         if i >= 0 && i < styles.count { design.iconStyle = styles[i] }
+        let bgs = AIBackgroundStyle.allCases.map { $0.rawValue }
+        let j = root.bgStylePopup.indexOfSelectedItem
+        if j >= 0 && j < bgs.count { design.backgroundStyle = bgs[j] }
         apply(design, note: "已更新主题选项 · 预览已刷新")
     }
 
