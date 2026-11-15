@@ -236,6 +236,7 @@ final class StatusBarView: NSView {
     /// are not hidden behind a menu.
     let bootSimBtn = UI.button("▶ 模拟引导", height: 22)
     let storeBtn = UI.button("🛒 主题商店", height: 22)
+    let assetsBtn = UI.button("🎨 素材库", height: 22)
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -244,7 +245,8 @@ final class StatusBarView: NSView {
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.isDisplayedWhenStopped = false
-        for v in [status, spinner, version, helpBtn, bootSimBtn, storeBtn] as [NSView] {
+        for v in [status, spinner, version, helpBtn, bootSimBtn, storeBtn,
+                  assetsBtn] as [NSView] {
             addSubview(v)
         }
     }
@@ -254,12 +256,13 @@ final class StatusBarView: NSView {
         let h = bounds.height
         let w = bounds.width
         spinner.frame = NSRect(x: 12, y: (h - 16) / 2, width: 16, height: 16)
-        status.frame = NSRect(x: 34, y: (h - 16) / 2, width: w - 470, height: 16)
-        // Right cluster: help · store · boot sim
+        status.frame = NSRect(x: 34, y: (h - 16) / 2, width: w - 556, height: 16)
+        // Right cluster: version · asset library · boot sim · store · help
         helpBtn.frame = NSRect(x: w - 92, y: (h - 22) / 2, width: 80, height: 22)
         storeBtn.frame = NSRect(x: w - 184, y: (h - 22) / 2, width: 84, height: 22)
         bootSimBtn.frame = NSRect(x: w - 284, y: (h - 22) / 2, width: 92, height: 22)
-        version.frame = NSRect(x: w - 428, y: (h - 15) / 2, width: 130, height: 15)
+        assetsBtn.frame = NSRect(x: w - 376, y: (h - 22) / 2, width: 84, height: 22)
+        version.frame = NSRect(x: w - 514, y: (h - 15) / 2, width: 130, height: 15)
     }
     func set(_ text: String, busy: Bool) {
         status.stringValue = text
@@ -352,6 +355,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
     private var bootWindow: BootScanWindowController?
     private var storeWindow: StoreWindowController?
     private var bootSimWindow: BootSimWindowController?
+    private var assetWindow: AssetLibraryWindowController?
     /// Row the context menu was opened on (‑1 = use the selected row).
     private var contextRow = -1
 
@@ -423,6 +427,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         r.statusBar.storeBtn.action = #selector(openStore)
         r.statusBar.bootSimBtn.target = self
         r.statusBar.bootSimBtn.action = #selector(openBootSim)
+        r.statusBar.assetsBtn.target = self
+        r.statusBar.assetsBtn.action = #selector(openAssetLibrary)
 
         let e = r.efi
         for (b, sel) in [(e.scanBtn, #selector(scanEFI)),
@@ -873,6 +879,21 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         storeWindow = s
         s.showWindow(nil)
         s.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Browse / maintain the bundled + user-imported wallpaper & icon pool.
+    /// From a theme editor the same window additionally offers "apply to theme".
+    @objc func openAssetLibrary() {
+        if let a = assetWindow, a.window?.isVisible == true {
+            a.showWindow(nil)
+            a.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let a = AssetLibraryWindowController(mode: .browse)
+        assetWindow = a
+        a.onClose = { [weak self] in self?.assetWindow = nil }
+        a.showWindow(nil)
+        a.window?.makeKeyAndOrderFront(nil)
     }
 
     /// Open the full-screen simulated boot / startup overlay. It reads the real

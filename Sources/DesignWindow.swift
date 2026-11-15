@@ -14,6 +14,7 @@ final class DesignRootView: NSView {
                                         trackingMode: .selectOne,
                                         target: nil, action: nil)
     let saveBtn = UI.button("保存设计", height: 28, accent: true)
+    let libraryBtn = UI.button("🎨 素材库选图", height: 28)
     let pngBtn = UI.button("导出合成 PNG…", height: 28)
     let icnsBtn = UI.button("导出背景 ICNS…", height: 28)
     let resetBtn = UI.button("恢复默认排版", height: 28)
@@ -31,8 +32,8 @@ final class DesignRootView: NSView {
         aspectCtrl.font = .systemFont(ofSize: 11)
         canvas.wantsLayer = true
         status.lineBreakMode = .byTruncatingTail
-        for v in [title, aspectCtrl, saveBtn, pngBtn, icnsBtn, resetBtn, doneBtn,
-                  topLine, canvas, inspector, bottomLine, status] as [NSView] {
+        for v in [title, aspectCtrl, libraryBtn, saveBtn, pngBtn, icnsBtn, resetBtn,
+                  doneBtn, topLine, canvas, inspector, bottomLine, status] as [NSView] {
             addSubview(v)
         }
     }
@@ -43,8 +44,8 @@ final class DesignRootView: NSView {
         let pad: CGFloat = 14
         let w = bounds.width
 
-        title.frame = NSRect(x: pad, y: 12, width: 220, height: 20)
-        aspectCtrl.frame = NSRect(x: pad + 232, y: 10, width: 156, height: 24)
+        title.frame = NSRect(x: pad, y: 12, width: 150, height: 20)
+        aspectCtrl.frame = NSRect(x: pad + 158, y: 10, width: 120, height: 24)
 
         let by: CGFloat = 8
         let doneX = w - pad - 76
@@ -56,6 +57,8 @@ final class DesignRootView: NSView {
                               width: 130, height: 28)
         saveBtn.frame = NSRect(x: pngBtn.frame.minX - 8 - 86, y: by,
                                width: 86, height: 28)
+        libraryBtn.frame = NSRect(x: saveBtn.frame.minX - 8 - 118, y: by,
+                                  width: 118, height: 28)
 
         topLine.frame = NSRect(x: pad, y: 48, width: w - pad * 2, height: 1)
         bottomLine.frame = NSRect(x: pad, y: bounds.height - 34,
@@ -89,6 +92,7 @@ final class DesignWindowController: NSWindowController, NSWindowDelegate {
     private var saveWork: DispatchWorkItem?
     private var dirty = false
     private var closing = false
+    private var library: AssetLibraryWindowController?
 
     /// Live preview sync (no library reload needed for every drag).
     var onLayoutChange: ((String, ThemeLayout) -> Void)?
@@ -130,6 +134,7 @@ final class DesignWindowController: NSWindowController, NSWindowDelegate {
         r.inspector.configureSnap(layout.snap, layout.grid)
 
         for (b, sel) in [(r.saveBtn, #selector(saveNow)),
+                         (r.libraryBtn, #selector(openAssetLibrary)),
                          (r.pngBtn, #selector(exportPNG)),
                          (r.icnsBtn, #selector(exportICNS)),
                          (r.resetBtn, #selector(resetLayout)),
@@ -290,6 +295,60 @@ final class DesignWindowController: NSWindowController, NSWindowDelegate {
             root.status.stringValue = "已加入图片元素 \((rel as NSString).lastPathComponent)"
         } catch {
             alert("添加图片失败", error.localizedDescription)
+        }
+    }
+
+    // MARK: Asset library
+
+    /// Pick a bundled / imported wallpaper or icon and add it to the canvas as
+    /// a real theme resource. The local-file flow above stays untouched.
+    @objc private func openAssetLibrary() {
+        if let c = library, c.window?.isVisible == true {
+            c.showWindow(nil)
+            c.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let c = AssetLibraryWindowController(mode: .add(.icon))
+        library = c
+        c.onClose = { [weak self] in self?.library = nil }
+        c.onChoose = { [weak self] item, role in
+            self?.addImageFromLibrary(item, role: role)
+        }
+        c.showWindow(nil)
+        c.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func addImageFromLibrary(_ item: AssetItem, role: AssetRole) {
+        var scratchDir: URL?
+        defer { if let d = scratchDir { try? FileManager.default.removeItem(at: d) } }
+        do {
+            let stem = role.stem ?? item.name
+            let staged = try AssetLibraryStore.stage(
+                item, destStem: stem,
+                preferredExt: AssetLibraryStore.preferredExt(item, role: role))
+            scratchDir = staged.deletingLastPathComponent()
+            // rebuildThemeManifest preserves the on-disk layout, so flush first.
+            try? ThemeLayout.save(root.canvas.layout, to: themeDir)
+            let leaf = staged.lastPathComponent
+            let rel: String
+            if FileManager.default.fileExists(atPath: themeDir.appendingPathComponent(leaf).path) {
+                rel = try replaceThemeAsset(themeDir, relative: leaf, with: staged)
+            } else {
+                rel = try importAsset(staged)
+            }
+            var e = DesignElement(id: "img-" + String(UUID().uuidString.prefix(8)),
+                                  kind: .image)
+            e.asset = rel
+            e.x = 0.43; e.y = 0.38; e.w = 0.14
+            e.h = min(0.6, 0.14 * root.canvas.layout.aspect)
+            reloadTheme()
+            root.canvas.layout.elements.append(e)
+            root.canvas.selectedId = e.id
+            root.inspector.configure(e)
+            changed()
+            root.status.stringValue = "已从素材库加入 \((rel as NSString).lastPathComponent)"
+        } catch {
+            alert("从素材库添加失败", error.localizedDescription)
         }
     }
 

@@ -55,6 +55,11 @@ private func isUI(_ name: String) -> Bool {
     return uiKeywords.contains { n.contains($0) }
 }
 
+/// Exposed to the asset library so its「界面元素」filter matches exactly how
+/// buildManifest() will classify the very same file name once it is written
+/// into a theme. Keeping one source of truth avoids categories drifting apart.
+func isUIAssetName(_ name: String) -> Bool { isUI(name) }
+
 private func entryRank(_ name: String) -> Int {
     let n = norm(name)
     for (i, key) in entryOrder.enumerated() where n == key { return i }

@@ -186,7 +186,10 @@ final class AssetPaneView: NSView {
     let addBtn = UI.button("＋ 添加资源", height: 26)
     let replaceBtn = UI.button("替换…", height: 26)
     let removeBtn = UI.button("删除", height: 26)
-    let hint = UI.label("也可把图片 / .icns / 字体直接拖进来添加",
+    /// Dedicated entry points to the bundled / user-imported asset library.
+    let libraryAddBtn = UI.button("🎨 从素材库添加…", height: 26)
+    let libraryReplaceBtn = UI.button("🎨 从素材库替换…", height: 26)
+    let hint = UI.label("素材库含内置壁纸与图标，也支持导入自己的图片；文件可直接拖入",
                         size: 10, color: .secondaryLabelColor)
     private let overlay = DropHintView()
 
@@ -201,7 +204,8 @@ final class AssetPaneView: NSView {
         layer?.borderWidth = 1
         overlay.text = "松开以添加资源\n图片 / 字体 / 标签 / 声音均可"
         overlay.isHidden = true
-        for v in [header, scroll, addBtn, replaceBtn, removeBtn, hint, overlay] as [NSView] {
+        for v in [header, scroll, addBtn, replaceBtn, removeBtn,
+                  libraryAddBtn, libraryReplaceBtn, hint, overlay] as [NSView] {
             addSubview(v)
         }
         hint.lineBreakMode = .byWordWrapping
@@ -214,13 +218,18 @@ final class AssetPaneView: NSView {
         let pad: CGFloat = 10
         let w = bounds.width - pad * 2
         header.frame = NSRect(x: pad, y: 10, width: w, height: 15)
-        let bottom: CGFloat = 62
+        let bottom: CGFloat = 94
         scroll.frame = NSRect(x: pad - 2, y: 30, width: w + 4,
                               height: max(60, bounds.height - 30 - bottom))
         let bw = (w - 12) / 3
-        addBtn.frame = NSRect(x: pad, y: bounds.height - 54, width: bw, height: 26)
-        replaceBtn.frame = NSRect(x: pad + bw + 6, y: bounds.height - 54, width: bw, height: 26)
-        removeBtn.frame = NSRect(x: pad + (bw + 6) * 2, y: bounds.height - 54, width: bw, height: 26)
+        let row1 = bounds.height - 86
+        addBtn.frame = NSRect(x: pad, y: row1, width: bw, height: 26)
+        replaceBtn.frame = NSRect(x: pad + bw + 6, y: row1, width: bw, height: 26)
+        removeBtn.frame = NSRect(x: pad + (bw + 6) * 2, y: row1, width: bw, height: 26)
+        let lw = (w - 6) / 2
+        let row2 = bounds.height - 54
+        libraryAddBtn.frame = NSRect(x: pad, y: row2, width: lw, height: 26)
+        libraryReplaceBtn.frame = NSRect(x: pad + lw + 6, y: row2, width: lw, height: 26)
         hint.frame = NSRect(x: pad, y: bounds.height - 24, width: w, height: 16)
         overlay.frame = bounds
     }
@@ -371,6 +380,7 @@ final class ThemeEditorWindowController: NSWindowController,
     private var changed = false
     private var closing = false
     private var converter: ICNSWindowController?
+    private var library: AssetLibraryWindowController?
 
     private var root: EditorRootView { window!.contentView as! EditorRootView }
 
@@ -411,6 +421,8 @@ final class ThemeEditorWindowController: NSWindowController,
         for (b, sel) in [(r.pane.addBtn, #selector(addResources)),
                          (r.pane.replaceBtn, #selector(replaceResource)),
                          (r.pane.removeBtn, #selector(removeResource)),
+                         (r.pane.libraryAddBtn, #selector(addFromLibrary)),
+                         (r.pane.libraryReplaceBtn, #selector(replaceFromLibrary)),
                          (r.labelBtn, #selector(applyLabel)),
                          (r.finderBtn, #selector(revealInFinder)),
                          (r.exportBtn, #selector(exportZIP)),
@@ -423,6 +435,7 @@ final class ThemeEditorWindowController: NSWindowController,
         r.labelBtn.isEnabled = false
         r.pane.replaceBtn.isEnabled = false
         r.pane.removeBtn.isEnabled = false
+        r.pane.libraryReplaceBtn.isEnabled = false
         refreshAssets()
     }
 
@@ -459,6 +472,7 @@ final class ThemeEditorWindowController: NSWindowController,
             currentStem = ""
             r.pane.replaceBtn.isEnabled = false
             r.pane.removeBtn.isEnabled = false
+            r.pane.libraryReplaceBtn.isEnabled = false
             return
         }
         if a.isImage, let img = NSImage(contentsOf: a.url) {
@@ -474,6 +488,7 @@ final class ThemeEditorWindowController: NSWindowController,
             (a.dims.isEmpty ? "" : " · \(a.dims)") + " · \(a.sizeText)"
         r.pane.replaceBtn.isEnabled = true
         r.pane.removeBtn.isEnabled = true
+        r.pane.libraryReplaceBtn.isEnabled = true
 
         let icons = (jsonRead(manifestFile())?["icons"] as? [[String: Any]] ?? [])
         if let hit = icons.first(where: { ($0["path"] as? String) == a.relative }) {
@@ -655,6 +670,109 @@ final class ThemeEditorWindowController: NSWindowController,
             } catch {
                 self.fail("删除资源失败", error)
             }
+        }
+    }
+
+    // MARK: Asset library
+
+    /// Open the shared asset library as a non-modal child window. The library
+    /// only picks a file; all theme writes happen here so the manifest stays
+    /// consistent with the normal add / replace flows.
+    private func showLibrary(mode: AssetLibraryMode) {
+        if let c = library, c.window?.isVisible == true {
+            c.showWindow(nil)
+            c.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let c = AssetLibraryWindowController(mode: mode)
+        library = c
+        c.onClose = { [weak self] in self?.library = nil }
+        c.onChoose = { [weak self] item, role in
+            guard let self = self else { return }
+            switch mode {
+            case .replace(let rel, _):
+                self.applyLibraryAsset(item, role: role, replacing: rel)
+            default:
+                self.applyLibraryAsset(item, role: role, replacing: nil)
+            }
+        }
+        c.showWindow(nil)
+        c.window?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func addFromLibrary() {
+        let role: AssetRole = {
+            guard let a = selectedAsset else { return .auto }
+            switch a.category {
+            case "背景": return .background
+            case "选中框": return .selected
+            case "光标": return .cursor
+            case "界面元素": return .ui
+            default: return .auto
+            }
+        }()
+        showLibrary(mode: .add(role))
+    }
+
+    @objc private func replaceFromLibrary() {
+        guard let a = selectedAsset else { return }
+        showLibrary(mode: .replace(a.relative, .auto))
+    }
+
+    private func applyLibraryAsset(_ item: AssetItem, role: AssetRole,
+                                   replacing: String?) {
+        let fm = FileManager.default
+        var scratchDir: URL?
+        defer { if let d = scratchDir { try? fm.removeItem(at: d) } }
+        do {
+            let destStem: String
+            let preferredExt: String
+            if let rel = replacing {
+                let oldURL = themeDir.appendingPathComponent(rel)
+                guard fm.fileExists(atPath: oldURL.path) else {
+                    throw AppError.message("原资源已不存在：\(rel)")
+                }
+                destStem = ((rel as NSString).lastPathComponent as NSString)
+                    .deletingPathExtension
+                let e = oldURL.pathExtension.lowercased()
+                preferredExt = e.isEmpty ? "png" : e
+            } else {
+                destStem = role.stem ?? item.name
+                preferredExt = AssetLibraryStore.preferredExt(item, role: role)
+            }
+            let staged = try AssetLibraryStore.stage(item, destStem: destStem,
+                                                      preferredExt: preferredExt)
+            scratchDir = staged.deletingLastPathComponent()
+
+            let mf = jsonRead(manifestFile()) ?? [:]
+            let canonical: String? = {
+                switch role {
+                case .background: return mf["background"] as? String
+                case .selected: return mf["selected"] as? String
+                case .cursor: return mf["cursor"] as? String
+                default: return nil
+                }
+            }()
+            let sameStem = assets.first {
+                (($0.relative as NSString).lastPathComponent as NSString)
+                    .deletingPathExtension.lowercased() == destStem.lowercased()
+            }?.relative
+            let target = replacing ?? canonical ?? sameStem
+
+            var message = ""
+            if let rel = target {
+                let newRel = try replaceThemeAsset(themeDir, relative: rel, with: staged)
+                refreshAssets(keepRelative: newRel)
+                message = "已用素材「\(item.name)」更新 \((newRel as NSString).lastPathComponent)"
+            } else {
+                let n = try addThemeAssets(themeDir, files: [staged])
+                refreshAssets()
+                message = "已加入 \(n) 个素材：\(staged.lastPathComponent)"
+            }
+            markChanged()
+            status(message)
+        } catch {
+            fail("应用素材失败", error)
         }
     }
 

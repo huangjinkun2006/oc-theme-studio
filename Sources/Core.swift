@@ -20,6 +20,9 @@ enum Paths {
     static let backups = support.appendingPathComponent("backups", isDirectory: true)
     static let state = support.appendingPathComponent("state.json")
     static let scratch = support.appendingPathComponent(".scratch", isDirectory: true)
+    /// User-imported wallpapers / icons for the asset library. Bundled presets
+    /// live in the read-only app bundle and are never written to.
+    static let assets = support.appendingPathComponent("Assets", isDirectory: true)
     static let bundledThemes = Bundle.main.resourceURL?
         .appendingPathComponent("themes", isDirectory: true)
 
@@ -28,6 +31,7 @@ enum Paths {
         try? fm.createDirectory(at: themes, withIntermediateDirectories: true)
         try? fm.createDirectory(at: backups, withIntermediateDirectories: true)
         try? fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: assets, withIntermediateDirectories: true)
         try? fm.createDirectory(at: support, withIntermediateDirectories: true)
         seedThemes()
     }
