@@ -11,6 +11,34 @@ import Foundation
 // Rendering happens locally so the feature works offline and produces real
 // files (PNG / ICNS / Font.ttf) that the existing apply-to-EFI flow can use.
 
+/// Visual treatment applied ON TOP of the original OpenCore icon artwork.
+/// `auto` derives the treatment from the wallpaper style so different themes
+/// produce visibly different icons instead of just a different tint.
+enum AIIconStyle: String, CaseIterable {
+    case auto, badge, glass, neon, ring, plain
+
+    var title: String {
+        switch self {
+        case .auto:   return "自动（跟随主题风格）"
+        case .badge:  return "圆角徽章 · 渐变底牌"
+        case .glass:  return "玻璃拟态 · 半透光"
+        case .neon:   return "霓虹发光 · 描边"
+        case .ring:   return "圆形光环 · 徽章"
+        case .plain:  return "原图染色 · 不加装饰"
+        }
+    }
+    var short: String {
+        switch self {
+        case .auto:   return "自动风格"
+        case .badge:  return "圆角徽章"
+        case .glass:  return "玻璃拟态"
+        case .neon:   return "霓虹发光"
+        case .ring:   return "圆形光环"
+        case .plain:  return "原图染色"
+        }
+    }
+}
+
 struct AIThemeDesign {
     var name = "AI 主题"
     var style = "极光"
@@ -25,13 +53,29 @@ struct AIThemeDesign {
     /// while KEEPING their original artwork (Apple / Windows / Tux / drive…).
     /// Turning it off copies the stock ICNS verbatim.
     var restyleIcons = true
+    /// auto / badge / glass / neon / ring / plain
+    var iconStyle = "auto"
     var brightness: Double = 0
     var seed: UInt64 = 1
     var engine = "本地智能引擎"
     var fromLLM = false
 
+    /// Resolve `auto` into a concrete treatment based on the wallpaper style.
+    var resolvedIconStyle: String {
+        if iconStyle != "auto" { return iconStyle }
+        switch style {
+        case "赛博霓虹", "电竞", "蒸汽波": return "neon"
+        case "极光", "深空宇宙", "深海":   return "glass"
+        case "水墨", "单色灰", "极简":     return "ring"
+        default:                            return "badge"
+        }
+    }
+    var iconStyleName: String {
+        AIIconStyle(rawValue: resolvedIconStyle)?.short ?? "圆角徽章"
+    }
     var summary: String {
-        "\(style) · \(decorationName) · \(iconSetName)\(restyleIcons ? " · 主题配色图标" : " · 原样系统图标")"
+        let icons = restyleIcons ? "主题配色图标 · \(iconStyleName)" : "原样系统图标"
+        return "\(style) · \(decorationName) · \(iconSetName) · \(icons)"
     }
     var decorationName: String {
         switch decoration {
@@ -263,6 +307,24 @@ enum AIThemeEngine {
             || low.contains("不要改图标") || low.contains("系统原版图标") {
             d.restyleIcons = false
         }
+        // Explicit icon-style overrides. Without one, `auto` picks a treatment
+        // that matches the wallpaper style (see resolvedIconStyle).
+        if low.contains("霓虹图标") || low.contains("发光图标") || low.contains("描边图标") {
+            d.iconStyle = "neon"
+        }
+        if low.contains("玻璃图标") || low.contains("毛玻璃") || low.contains("半透明图标") {
+            d.iconStyle = "glass"
+        }
+        if low.contains("圆形图标") || low.contains("光环图标") || low.contains("圆环图标") {
+            d.iconStyle = "ring"
+        }
+        if low.contains("徽章图标") || low.contains("方牌图标") || low.contains("卡片图标") {
+            d.iconStyle = "badge"
+        }
+        if low.contains("原图染色") || low.contains("只换颜色") || low.contains("不要图标风格") {
+            d.iconStyle = "plain"
+        }
+        if low.contains("自动图标风格") { d.iconStyle = "auto" }
         d.name = extractName(p) ?? "\(style.name) · \(suffixes[Int(rng.range(0, CGFloat(suffixes.count))) % suffixes.count])"
         return d
     }
@@ -289,8 +351,8 @@ enum AIThemeEngine {
 
     private static let systemPrompt = """
     你是 OpenCore 启动菜单主题设计师。用户会用中文描述想要的风格，请输出严格 JSON（不要 markdown 代码块、不要解释），字段：
-    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","restyleIcons":true}
-    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。restyleIcons 为 true 时把原有系统图标按主题配色重新着色（保留造型），false 时使用原样图标。整体要协调且符合用户描述。
+    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","restyleIcons":true,"iconStyle":"auto|badge|glass|neon|ring|plain"}
+    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。restyleIcons 为 true 时把原有系统图标按主题配色重新着色（保留造型），false 时使用原样图标。iconStyle 决定图标风格：auto 跟随整体风格，badge 圆角渐变底牌，glass 玻璃拟态，neon 霓虹发光，ring 圆形光环，plain 只染色不加装饰。整体要协调且符合用户描述。
     """
 
     /// Parse the model's free-form reply into a design. Tolerates markdown
@@ -318,6 +380,8 @@ enum AIThemeEngine {
         if let b = obj["restyleIcons"] as? Bool { d.restyleIcons = b }
         // Backwards compatibility with older model replies / presets.
         else if let b = obj["monochromeIcons"] as? Bool { d.restyleIcons = b }
+        if let s = obj["iconStyle"] as? String,
+           AIIconStyle.allCases.map({ $0.rawValue }).contains(s) { d.iconStyle = s }
         d.fromLLM = true
         d.engine = "大模型 · \(model)"
         return d
@@ -581,6 +645,10 @@ enum AIThemeRenderer {
                      b: a.b + (b.b - a.b) * k)
     }
 
+    private static func cg(_ c: AIRGB, alpha: CGFloat = 1) -> CGColor {
+        NSColor(calibratedRed: c.r, green: c.g, blue: c.b, alpha: alpha).cgColor
+    }
+
     /// Fixed-layout RGBA bitmap: premultiplied, R,G,B,A order in memory.
     private static func rgbaContext(_ side: Int) -> CGContext? {
         let info = CGBitmapInfo.byteOrder32Big.rawValue
@@ -597,8 +665,12 @@ enum AIThemeRenderer {
     }
 
     /// Recolour one bundled ICNS into a themed PNG, preserving its artwork.
+    /// When `extractGlyph` is set, icons that ship with an opaque dark square
+    /// tile (Apple / Linux / Ubuntu) have that tile keyed out, leaving a clean
+    /// transparent logo that can be dropped onto a styled backdrop.
     static func styledIconPNG(_ src: URL, _ d: AIThemeDesign,
-                              side: Int = 256) -> Data? {
+                              side: Int = 256,
+                              extractGlyph: Bool = false) -> Data? {
         guard let img = NSImage(contentsOf: src),
               let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let srcCtx = rgbaContext(side), let dstCtx = rgbaContext(side),
@@ -612,6 +684,32 @@ enum AIThemeRenderer {
         let mid = rgb(d.accent)
         let light = mix(mid, AIRGB(r: 1, g: 1, b: 1), 0.80)
 
+        // Apple / Linux / Ubuntu ship a ROUNDED dark tile: the absolute corners
+        // are transparent, so sample just inside the round corners instead.
+        // Those four points are bright artwork on the drive/terminal icons and
+        // dark background on the glyph-on-tile icons — a reliable discriminator.
+        var cornerLum: CGFloat = 0
+        var opaqueCorners = true
+        if extractGlyph {
+            let f: [CGFloat] = [0.16, 0.84]
+            let pts: [(CGFloat, CGFloat)] = [(f[0], f[0]), (f[1], f[0]),
+                                             (f[0], f[1]), (f[1], f[1])]
+            for (fx, fy) in pts {
+                let x = Int(fx * CGFloat(side)), y = Int(fy * CGFloat(side))
+                let o = (y * side + x) * 4
+                let a = CGFloat(inp[o + 3]) / 255
+                if a < 0.85 { opaqueCorners = false }
+                let inv: CGFloat = a > 0.004 ? 1 / a : 0
+                let r = min(1, CGFloat(inp[o])     / 255 * inv)
+                let g = min(1, CGFloat(inp[o + 1]) / 255 * inv)
+                let b = min(1, CGFloat(inp[o + 2]) / 255 * inv)
+                cornerLum += 0.2126 * r + 0.7152 * g + 0.0722 * b
+            }
+            cornerLum /= CGFloat(pts.count)
+        }
+        let hasDarkTile = extractGlyph && opaqueCorners && cornerLum < 0.45
+        let lo = cornerLum + 0.03, hi = cornerLum + 0.22
+
         for i in 0..<(side * side) {
             let o = i * 4
             let a = CGFloat(inp[o + 3]) / 255
@@ -623,13 +721,151 @@ enum AIThemeRenderer {
             let t = pow(min(1, max(0, lum)), 0.85)
             let c = t < 0.5 ? mix(dark, mid, t / 0.5)
                             : mix(mid, light, (t - 0.5) / 0.5)
-            outp[o]     = UInt8(min(255, max(0, c.r * a * 255)))
-            outp[o + 1] = UInt8(min(255, max(0, c.g * a * 255)))
-            outp[o + 2] = UInt8(min(255, max(0, c.b * a * 255)))
-            outp[o + 3] = inp[o + 3]
+            var alpha = a
+            if hasDarkTile {
+                let k = min(1, max(0, (lum - lo) / (hi - lo)))
+                alpha *= k * k * (3 - 2 * k)          // smoothstep
+            }
+            outp[o]     = UInt8(min(255, max(0, c.r * alpha * 255)))
+            outp[o + 1] = UInt8(min(255, max(0, c.g * alpha * 255)))
+            outp[o + 2] = UInt8(min(255, max(0, c.b * alpha * 255)))
+            outp[o + 3] = UInt8(min(255, max(0, alpha * 255)))
         }
         guard let out = dstCtx.makeImage() else { return nil }
         return NSBitmapImageRep(cgImage: out).representation(using: .png, properties: [:])
+    }
+
+    /// Style backdrop drawn UNDER the (still recognisable) system logo.
+    private static func iconBackdrop(_ kind: String, _ d: AIThemeDesign,
+                                     ctx: CGContext, s: CGFloat) {
+        let rect = CGRect(x: 0, y: 0, width: s, height: s)
+        let center = CGPoint(x: s / 2, y: s / 2)
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let clear = NSColor(calibratedWhite: 1, alpha: 0).cgColor
+
+        switch kind {
+        case "badge":
+            // Solid, saturated gradient tile — deliberately the heaviest look.
+            let r = rect.insetBy(dx: s * 0.025, dy: s * 0.025)
+            let path = CGPath(roundedRect: r, cornerWidth: s * 0.22,
+                              cornerHeight: s * 0.22, transform: nil)
+            ctx.saveGState(); ctx.addPath(path); ctx.clip()
+            let top = cg(mix(rgb(d.palette[1]), rgb(d.accent), 0.42))
+            let g = CGGradient(colorsSpace: cs,
+                               colors: [top, aiCGColor(d.palette[0])] as CFArray,
+                               locations: [0, 1])!
+            ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: s),
+                                   end: CGPoint(x: s, y: 0), options: [])
+            let gloss = CGGradient(colorsSpace: cs,
+                                   colors: [NSColor(calibratedWhite: 1, alpha: 0.22).cgColor,
+                                            clear] as CFArray, locations: [0, 1])!
+            ctx.drawLinearGradient(gloss, start: CGPoint(x: 0, y: s),
+                                   end: CGPoint(x: 0, y: s * 0.45), options: [])
+            // Accent bar along the bottom edge of the tile.
+            ctx.setFillColor(aiCGColor(d.accent, alpha: 0.75))
+            ctx.fill(CGRect(x: s * 0.16, y: s * 0.065,
+                            width: s * 0.68, height: s * 0.022))
+            ctx.restoreGState()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.85))
+            ctx.setLineWidth(max(1, s * 0.018))
+            ctx.addPath(path); ctx.strokePath()
+
+        case "glass":
+            // Almost transparent: a hairline outline and one diagonal sheen.
+            let r = rect.insetBy(dx: s * 0.05, dy: s * 0.05)
+            let path = CGPath(roundedRect: r, cornerWidth: s * 0.22,
+                              cornerHeight: s * 0.22, transform: nil)
+            ctx.saveGState(); ctx.addPath(path); ctx.clip()
+            ctx.setFillColor(NSColor(calibratedWhite: 1, alpha: 0.055).cgColor)
+            ctx.fill(r)
+            let gloss = CGGradient(colorsSpace: cs,
+                                   colors: [NSColor(calibratedWhite: 1, alpha: 0.30).cgColor,
+                                            clear] as CFArray, locations: [0, 1])!
+            ctx.drawLinearGradient(gloss, start: CGPoint(x: s * 0.05, y: s),
+                                   end: CGPoint(x: s * 0.85, y: s * 0.05), options: [])
+            ctx.restoreGState()
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.48).cgColor)
+            ctx.setLineWidth(max(1, s * 0.009))
+            ctx.addPath(path); ctx.strokePath()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.30))
+            ctx.setLineWidth(max(1, s * 0.006))
+            ctx.addPath(CGPath(roundedRect: r.insetBy(dx: s * 0.035, dy: s * 0.035),
+                               cornerWidth: s * 0.19, cornerHeight: s * 0.19,
+                               transform: nil)); ctx.strokePath()
+
+        case "ring":
+            let inner = CGPath(ellipseIn: rect.insetBy(dx: s * 0.075, dy: s * 0.075),
+                               transform: nil)
+            ctx.setFillColor(aiCGColor(d.palette[0], alpha: 0.78))
+            ctx.addPath(inner); ctx.fillPath()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.88))
+            ctx.setLineWidth(max(1, s * 0.020))
+            ctx.addPath(inner); ctx.strokePath()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.24))
+            ctx.setLineWidth(max(1, s * 0.007))
+            ctx.strokeEllipse(in: rect.insetBy(dx: s * 0.025, dy: s * 0.025))
+            for ang in [CGFloat.pi / 4, 3 * CGFloat.pi / 4,
+                        5 * CGFloat.pi / 4, 7 * CGFloat.pi / 4] {
+                let rr = s * 0.46
+                let p = CGPoint(x: center.x + cos(ang) * rr, y: center.y + sin(ang) * rr)
+                ctx.setFillColor(aiCGColor(d.accent, alpha: 0.85))
+                ctx.fillEllipse(in: CGRect(x: p.x - s * 0.012, y: p.y - s * 0.012,
+                                           width: s * 0.024, height: s * 0.024))
+            }
+
+        case "neon":
+            // No box at all: a coloured bloom plus four HUD corner brackets.
+            let g = CGGradient(colorsSpace: cs,
+                               colors: [aiCGColor(d.glow, alpha: 0.72),
+                                        aiCGColor(d.glow, alpha: 0)] as CFArray,
+                               locations: [0, 1])!
+            ctx.drawRadialGradient(g, startCenter: center, startRadius: 0,
+                                   endCenter: center, endRadius: s * 0.58, options: [])
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.92))
+            ctx.setLineWidth(max(1, s * 0.020))
+            ctx.setLineCap(.round)
+            let m = s * 0.055, len = s * 0.17
+            for (cx, cy, sx, sy) in [(m, s - m, 1, -1), (s - m, s - m, -1, -1),
+                                     (m, m, 1, 1), (s - m, m, -1, 1)] {
+                ctx.move(to: CGPoint(x: cx + CGFloat(sx) * len, y: cy))
+                ctx.addLine(to: CGPoint(x: cx, y: cy))
+                ctx.addLine(to: CGPoint(x: cx, y: cy + CGFloat(sy) * len))
+                ctx.strokePath()
+            }
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.35))
+            ctx.setLineWidth(max(1, s * 0.006))
+            ctx.strokeEllipse(in: rect.insetBy(dx: s * 0.10, dy: s * 0.10))
+
+        default:
+            break
+        }
+    }
+
+    /// Final icon artwork: themed original logo + an optional style treatment.
+    static func iconArtworkPNG(_ src: URL, _ d: AIThemeDesign,
+                               side: Int = 256) -> Data? {
+        let kind = d.resolvedIconStyle
+        let plain = kind == "plain"
+        guard let base = styledIconPNG(src, d, side: side,
+                                       extractGlyph: !plain) else { return nil }
+        if plain { return base }
+        guard let img = NSImage(data: base),
+              let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return base }
+        let s = CGFloat(side)
+        let inset: CGFloat
+        switch kind {
+        case "ring":  inset = 0.17
+        case "neon":  inset = 0.14
+        case "badge": inset = 0.13
+        default:      inset = 0.11
+        }
+        return png(CGSize(width: s, height: s)) { ctx, sz in
+            iconBackdrop(kind, d, ctx: ctx, s: sz.width)
+            ctx.draw(cg, in: CGRect(x: s * inset, y: s * inset,
+                                    width: s * (1 - 2 * inset),
+                                    height: s * (1 - 2 * inset)))
+        }
     }
 
     /// Wrap PNG reps into a real ICNS container (ic07 128px + ic08 256px).
@@ -655,15 +891,15 @@ enum AIThemeRenderer {
     }
 
     static func styledIcon(_ src: URL, _ d: AIThemeDesign) -> Data? {
-        guard let big = styledIconPNG(src, d) else { return nil }
-        return icns(png256: big, png128: styledIconPNG(src, d, side: 128))
+        guard let big = iconArtworkPNG(src, d) else { return nil }
+        return icns(png256: big, png128: iconArtworkPNG(src, d, side: 128))
     }
 
     /// The image shown in the generator preview for one icon slot.
     static func iconImage(_ file: String, _ d: AIThemeDesign) -> NSImage? {
         guard let src = iconSource(file) else { return nil }
         if !d.restyleIcons { return NSImage(contentsOf: src) }
-        guard let png = styledIconPNG(src, d) else { return NSImage(contentsOf: src) }
+        guard let png = iconArtworkPNG(src, d) else { return NSImage(contentsOf: src) }
         return NSImage(data: png)
     }
 
