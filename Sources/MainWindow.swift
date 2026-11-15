@@ -59,6 +59,7 @@ final class LibraryColumnView: NSView {
     let bootBtn = UI.button("识别启动项", height: 26)
     let icnsBtn = UI.button("⇄ 转 ICNS", height: 26)
     let moreBtn = UI.button("⋯ 更多", height: 26)
+    let aiBtn = UI.button("✨ AI 一键生成主题", height: 28)
     let scroll: NSScrollView
     let table: NSTableView
     let foot = UI.label("", size: 10.5, color: .secondaryLabelColor)
@@ -74,7 +75,10 @@ final class LibraryColumnView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         dropOverlay.isHidden = true
-        for v in [header, importBtn, buttonsRow, buttonsRow2, buttonsRow3,
+        aiBtn.bezelColor = .controlAccentColor
+        aiBtn.contentTintColor = .white
+        aiBtn.font = .systemFont(ofSize: 12, weight: .semibold)
+        for v in [header, importBtn, buttonsRow, buttonsRow2, buttonsRow3, aiBtn,
                   scroll, foot, dropOverlay] as [NSView] {
             addSubview(v)
         }
@@ -94,8 +98,9 @@ final class LibraryColumnView: NSView {
         buttonsRow.frame = NSRect(x: pad, y: 68, width: w, height: 26)
         buttonsRow2.frame = NSRect(x: pad, y: 100, width: w, height: 26)
         buttonsRow3.frame = NSRect(x: pad, y: 132, width: w, height: 26)
+        aiBtn.frame = NSRect(x: pad, y: 164, width: w, height: 28)
         foot.frame = NSRect(x: pad, y: bounds.height - 66, width: w, height: 52)
-        let tableTop: CGFloat = 166
+        let tableTop: CGFloat = 200
         let tableBottom = bounds.height - 74
         scroll.frame = NSRect(x: pad - 2, y: tableTop, width: w + 4,
                               height: max(60, tableBottom - tableTop))
@@ -356,6 +361,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
     private var storeWindow: StoreWindowController?
     private var bootSimWindow: BootSimWindowController?
     private var assetWindow: AssetLibraryWindowController?
+    private var aiWindow: AIThemeWindowController?
     /// Row the context menu was opened on (‑1 = use the selected row).
     private var contextRow = -1
 
@@ -411,6 +417,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         r.library.bootBtn.action = #selector(scanBootEntries)
         r.library.moreBtn.target = self
         r.library.moreBtn.action = #selector(showMoreMenu(_:))
+        r.library.aiBtn.target = self
+        r.library.aiBtn.action = #selector(openAIThemeGenerator)
         r.library.table.menu = makeThemeMenu()
         r.preview.designBtn.target = self
         r.preview.designBtn.action = #selector(openDesignEditor)
@@ -879,6 +887,26 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         storeWindow = s
         s.showWindow(nil)
         s.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// AI theme generator: prompt -> design -> locally rendered full theme.
+    @objc func openAIThemeGenerator() {
+        if let a = aiWindow, a.window?.isVisible == true {
+            a.showWindow(nil)
+            a.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let a = AIThemeWindowController()
+        aiWindow = a
+        a.onClose = { [weak self] in self?.aiWindow = nil }
+        a.onSaved = { [weak self] id in
+            guard let self = self else { return }
+            self.reloadLibrary(selectId: id)
+            self.updateApplyButton()
+            self.root.statusBar.set("已生成并选中新主题 · 可直接应用到 EFI", busy: false)
+        }
+        a.showWindow(nil)
+        a.window?.makeKeyAndOrderFront(nil)
     }
 
     /// Browse / maintain the bundled + user-imported wallpaper & icon pool.

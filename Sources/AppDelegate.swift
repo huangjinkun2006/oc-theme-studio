@@ -336,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toolsItem)
         let toolsMenu = NSMenu(title: "工具")
         toolsItem.submenu = toolsMenu
+        toolsMenu.addItem(NSMenuItem(title: "AI 一键生成主题…", action: #selector(openAIThemeMenu(_:)), keyEquivalent: "g"))
         toolsMenu.addItem(NSMenuItem(title: "图标 / 壁纸素材库…", action: #selector(openAssetLibraryMenu(_:)), keyEquivalent: "k"))
         toolsMenu.addItem(NSMenuItem(title: "模拟引导启动…", action: #selector(openBootSimMenu(_:)), keyEquivalent: ""))
         toolsMenu.addItem(NSMenuItem(title: "主题商店…", action: #selector(openStoreMenu(_:)), keyEquivalent: ""))
@@ -376,6 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openBootSimMenu(_ sender: Any?) { mainWindow?.openBootSim() }
     @objc func openStoreMenu(_ sender: Any?) { mainWindow?.openStore() }
     @objc func openAssetLibraryMenu(_ sender: Any?) { mainWindow?.openAssetLibrary() }
+    @objc func openAIThemeMenu(_ sender: Any?) { mainWindow?.openAIThemeGenerator() }
 
     /// Forward a store-downloaded theme to the main window's apply flow.
     func applyThemeFromStore(_ theme: Theme) {

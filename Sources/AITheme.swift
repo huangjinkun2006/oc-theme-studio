@@ -1,0 +1,695 @@
+import AppKit
+import CoreGraphics
+import Foundation
+
+// MARK: - Design model
+//
+// "AI 生成主题" is a three-stage pipeline:
+//   prompt -> ThemeDesign (semantic engine, optionally upgraded by an LLM)
+//          -> Core Graphics rendering of a COMPLETE OpenCore resource set
+//          -> makeTheme() skeleton + rebuildThemeManifest()
+// Rendering happens locally so the feature works offline and produces real
+// files (PNG / ICNS / Font.ttf) that the existing apply-to-EFI flow can use.
+
+struct AIThemeDesign {
+    var name = "AI 主题"
+    var style = "极光"
+    var prompt = ""
+    var palette: [String] = ["#101A32", "#1B2A50", "#0A1020"]
+    var accent = "#5AC8FA"
+    var glow = "#7B61FF"
+    var decoration = "stars"       // stars / grid / rings / waves / none
+    var density = 0.5
+    var iconSet = "standard"       // standard / minimal / linux / full
+    var monochromeIcons = false
+    var brightness: Double = 0
+    var seed: UInt64 = 1
+    var engine = "本地智能引擎"
+    var fromLLM = false
+
+    var summary: String {
+        "\(style) · \(decorationName) · \(iconSetName)\(monochromeIcons ? " · 统一色调图标" : "")"
+    }
+    var decorationName: String {
+        switch decoration {
+        case "grid": return "网格"
+        case "rings": return "光环"
+        case "waves": return "波纹"
+        case "none": return "纯净"
+        default: return "星点"
+        }
+    }
+    var iconSetName: String {
+        switch iconSet {
+        case "minimal": return "极简 4 图标"
+        case "linux": return "多发行版 10 图标"
+        case "full": return "全量图标"
+        default: return "标准 8 图标"
+        }
+    }
+}
+
+// MARK: - Colours & deterministic randomness
+
+func aiNSColor(_ hex: String, alpha: CGFloat = 1) -> NSColor {
+    var s = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.hasPrefix("#") { s.removeFirst() }
+    if s.count == 3 { s = s.map { "\($0)\($0)" }.joined() }
+    guard s.count == 6, let v = UInt32(s, radix: 16) else {
+        return NSColor(calibratedRed: 0.12, green: 0.16, blue: 0.28, alpha: alpha)
+    }
+    return NSColor(calibratedRed: CGFloat((v >> 16) & 0xff) / 255,
+                   green: CGFloat((v >> 8) & 0xff) / 255,
+                   blue: CGFloat(v & 0xff) / 255, alpha: alpha)
+}
+
+func aiCGColor(_ hex: String, alpha: CGFloat = 1) -> CGColor {
+    aiNSColor(hex, alpha: alpha).cgColor
+}
+
+func aiAdjust(_ hex: String, delta: CGFloat, alpha: CGFloat = 1) -> CGColor {
+    let c = aiNSColor(hex)
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    c.getRed(&r, green: &g, blue: &b, alpha: &a)
+    return NSColor(calibratedRed: min(1, max(0, r + delta)),
+                   green: min(1, max(0, g + delta)),
+                   blue: min(1, max(0, b + delta)), alpha: alpha).cgColor
+}
+
+struct AIRandom {
+    var state: UInt64
+    init(_ seed: UInt64) { state = seed == 0 ? 0x9E3779B97F4A7C15 : seed }
+    mutating func next() -> Double {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Double((state >> 17) & 0xffffff) / Double(0xffffff)
+    }
+    mutating func range(_ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+        lo + CGFloat(next()) * (hi - lo)
+    }
+}
+
+// MARK: - AI settings (OpenAI-compatible chat completions)
+
+struct AISettings: Codable {
+    var enabled = false
+    var baseURL = "https://api.deepseek.com/v1"
+    var apiKey = ""
+    var model = "deepseek-chat"
+
+    static var file: URL { Paths.support.appendingPathComponent("ai.json") }
+
+    static func load() -> AISettings {
+        guard let d = try? Data(contentsOf: file),
+              let s = try? JSONDecoder().decode(AISettings.self, from: d) else {
+            return AISettings()
+        }
+        return s
+    }
+
+    func save() {
+        try? FileManager.default.createDirectory(at: Paths.support,
+                                                  withIntermediateDirectories: true)
+        guard let d = try? JSONEncoder().encode(self) else { return }
+        try? d.write(to: AISettings.file, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: AISettings.file.path)
+    }
+
+    static let presets: [(name: String, url: String, model: String)] = [
+        ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+        ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
+        ("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+        ("Moonshot", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
+        ("本地 Ollama", "http://localhost:11434/v1", "qwen2.5"),
+    ]
+}
+
+// MARK: - Semantic style library
+
+struct AIStyleTemplate {
+    let key: String
+    let name: String
+    let keywords: [String]
+    let palette: [String]
+    let accent: String
+    let glow: String
+    let decoration: String
+    let density: Double
+}
+
+enum AIThemeEngine {
+    static let styles: [AIStyleTemplate] = [
+        AIStyleTemplate(key: "cyberpunk", name: "赛博霓虹",
+                        keywords: ["赛博", "霓虹", "cyber", "neon", "科幻", "未来", "黑客", "matrix"],
+                        palette: ["#2A0B3F", "#120A2E", "#06122B"],
+                        accent: "#FF4FD8", glow: "#22D3EE", decoration: "grid", density: 0.8),
+        AIStyleTemplate(key: "aurora", name: "极光",
+                        keywords: ["极光", "aurora", "梦幻", "渐变", "星空渐变"],
+                        palette: ["#101A32", "#1B2A50", "#0A1020"],
+                        accent: "#7AE7C7", glow: "#7B61FF", decoration: "stars", density: 0.6),
+        AIStyleTemplate(key: "space", name: "深空宇宙",
+                        keywords: ["星空", "宇宙", "银河", "太空", "space", "galaxy", "星云", "夜晚"],
+                        palette: ["#0B1030", "#18103A", "#050713"],
+                        accent: "#A5B4FC", glow: "#6D5AE6", decoration: "stars", density: 1.0),
+        AIStyleTemplate(key: "ocean", name: "深海",
+                        keywords: ["海", "海洋", "深海", "ocean", "蓝", "水", "青"],
+                        palette: ["#062A38", "#0A3C50", "#04141F"],
+                        accent: "#4FD1C5", glow: "#1E7FA8", decoration: "waves", density: 0.55),
+        AIStyleTemplate(key: "forest", name: "森林",
+                        keywords: ["森林", "自然", "绿", "forest", "草木", "清新", "苔"],
+                        palette: ["#10281E", "#1B3D2B", "#07120E"],
+                        accent: "#9BE58C", glow: "#3F9A6D", decoration: "rings", density: 0.5),
+        AIStyleTemplate(key: "sunset", name: "落日",
+                        keywords: ["日落", "黄昏", "夕阳", "sunset", "橙", "暖", "晚霞", "秋"],
+                        palette: ["#3A1630", "#5A2530", "#160E20"],
+                        accent: "#FFB27A", glow: "#E0625B", decoration: "waves", density: 0.45),
+        AIStyleTemplate(key: "minimal", name: "极简",
+                        keywords: ["极简", "简约", "干净", "minimal", "黑白", "商务", "素", "苹果", "mac"],
+                        palette: ["#22262E", "#171A20", "#0C0E12"],
+                        accent: "#E8EDF5", glow: "#5B6472", decoration: "none", density: 0.15),
+        AIStyleTemplate(key: "sakura", name: "樱花",
+                        keywords: ["樱花", "粉", "少女", "sakura", "粉彩", "可爱", "浪漫"],
+                        palette: ["#3A1836", "#4A2246", "#1A0E22"],
+                        accent: "#FFB3D9", glow: "#F173AC", decoration: "stars", density: 0.7),
+        AIStyleTemplate(key: "retro", name: "蒸汽波",
+                        keywords: ["复古", "蒸汽波", "retro", "vapor", "80年代", "怀旧", "像素"],
+                        palette: ["#2B1250", "#5B1E63", "#100A2E"],
+                        accent: "#FF8FD8", glow: "#43C6E8", decoration: "grid", density: 0.75),
+        AIStyleTemplate(key: "ink", name: "水墨",
+                        keywords: ["水墨", "中国风", "国风", "东方", "墨", "金", "山水", "禅"],
+                        palette: ["#1A1C1E", "#25282B", "#0A0B0C"],
+                        accent: "#D8B978", glow: "#8A7340", decoration: "rings", density: 0.35),
+        AIStyleTemplate(key: "gaming", name: "电竞",
+                        keywords: ["游戏", "电竞", "gaming", "rgb", "酷", "燃", "红黑"],
+                        palette: ["#2B0A12", "#3A0D18", "#0A0508"],
+                        accent: "#FF5A5F", glow: "#C0264A", decoration: "grid", density: 0.85),
+        AIStyleTemplate(key: "mono", name: "单色灰",
+                        keywords: ["单色", "灰", "mono", "冷", "银", "金属", "工业"],
+                        palette: ["#232833", "#1A1F28", "#0D1016"],
+                        accent: "#C7D0DD", glow: "#6B7688", decoration: "none", density: 0.2),
+    ]
+
+    static let inspirations = [
+        "赛博朋克霓虹夜色，品红与青色对比，带细密网格",
+        "清晨极光掠过深蓝湖面，安静通透",
+        "深空宇宙与银河星尘，紫色星云",
+        "极简黑白，干净克制，不要任何装饰",
+        "雨后森林，苔绿与薄雾，同心光环",
+        "落日余晖，暖橙与玫瑰紫，柔和波纹",
+        "樱花夜，粉紫渐变，飘落的光点",
+        "80 年代蒸汽波，紫色网格与霓虹",
+        "水墨留白，墨黑与淡金，东方气质",
+        "深海寂静，青蓝渐变，微微的水波",
+        "电竞红黑，锐利光线与网格",
+        "冷调金属灰，工业感，单色",
+    ]
+
+    private static let suffixes = ["夜航", "序曲", "余晖", "边界", "序章", "回声", "浮光",
+                                   "静默", "远山", "潮汐", "微光", "轨迹", "之间", "彼端"]
+
+    /// Turn a free-form prompt into a concrete design. Fully offline, always
+    /// succeeds; the LLM path only refines the same structure.
+    static func design(prompt: String, seed: UInt64? = nil) -> AIThemeDesign {
+        let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let low = p.lowercased()
+        let s = seed ?? (UInt64.random(in: 1...UInt64.max) ^ UInt64(abs(p.hashValue) & 0xffff))
+        var rng = AIRandom(s)
+
+        var best: AIStyleTemplate?
+        var bestScore = 0
+        for st in styles {
+            let score = st.keywords.filter { low.contains($0.lowercased()) }.count
+            if score > bestScore { bestScore = score; best = st }
+        }
+        let style = best ?? styles[Int(rng.range(0, CGFloat(styles.count))) % styles.count]
+
+        var d = AIThemeDesign()
+        d.prompt = p
+        d.seed = s
+        d.style = style.name
+        d.palette = style.palette
+        d.accent = style.accent
+        d.glow = style.glow
+        d.decoration = style.decoration
+        d.density = style.density
+        d.engine = "本地智能引擎"
+
+        // Modifiers override parts of the template.
+        if low.contains("明亮") || low.contains("浅色") || low.contains("bright") || low.contains("light") {
+            d.brightness = 0.16
+        } else if low.contains("更深") || low.contains("深黑") || low.contains("dark") {
+            d.brightness = -0.07
+        }
+        if low.contains("网格") || low.contains("grid") { d.decoration = "grid" }
+        if low.contains("圆环") || low.contains("光环") || low.contains("ring") { d.decoration = "rings" }
+        if low.contains("波纹") || low.contains("波浪") || low.contains("wave") { d.decoration = "waves" }
+        if low.contains("星") || low.contains("star") { d.decoration = "stars" }
+        if low.contains("不要装饰") || low.contains("纯净") || low.contains("无装饰") || low.contains("clean") {
+            d.decoration = "none"; d.density = 0.1
+        }
+        if low.contains("密集") || low.contains("丰富") { d.density = min(1, d.density + 0.3) }
+        if low.contains("稀疏") || low.contains("少量") { d.density = max(0.1, d.density - 0.35) }
+        if low.contains("极简") || low.contains("少量图标") || low.contains("四个图标") { d.iconSet = "minimal" }
+        if low.contains("发行版") || low.contains("多系统") || low.contains("linux") { d.iconSet = "linux" }
+        if low.contains("全部图标") || low.contains("全量") { d.iconSet = "full" }
+        if low.contains("单色图标") || low.contains("统一色调") || low.contains("剪影") {
+            d.monochromeIcons = true
+        }
+        d.name = extractName(p) ?? "\(style.name) · \(suffixes[Int(rng.range(0, CGFloat(suffixes.count))) % suffixes.count])"
+        return d
+    }
+
+    private static func extractName(_ p: String) -> String? {
+        for pair in [("「", "」"), ("《", "》"), ("\"", "\""), ("'", "'")] {
+            if let a = p.range(of: pair.0), let b = p.range(of: pair.1, range: a.upperBound..<p.endIndex) {
+                let s = String(p[a.upperBound..<b.lowerBound]).trimmingCharacters(in: .whitespaces)
+                if !s.isEmpty && s.count <= 24 { return s }
+            }
+        }
+        for key in ["叫", "命名为", "名字叫", "主题名", "name:"] {
+            if let r = p.range(of: key) {
+                let tail = String(p[r.upperBound...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = tail.components(separatedBy: CharacterSet(charactersIn: "，,。.;； ")).first ?? ""
+                if !name.isEmpty && name.count <= 24 { return name }
+            }
+        }
+        return nil
+    }
+
+    // MARK: LLM refinement
+
+    private static let systemPrompt = """
+    你是 OpenCore 启动菜单主题设计师。用户会用中文描述想要的风格，请输出严格 JSON（不要 markdown 代码块、不要解释），字段：
+    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","monochromeIcons":false}
+    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。整体要协调且符合用户描述。
+    """
+
+    /// Parse the model's free-form reply into a design. Tolerates markdown
+    /// fences and partial JSON: missing fields keep the offline engine's values.
+    static func parseLLMDesign(_ content: String, prompt: String,
+                               model: String) -> AIThemeDesign? {
+        let text = content.replacingOccurrences(of: "```json", with: "")
+                          .replacingOccurrences(of: "```", with: "")
+        guard let a = text.range(of: "{"),
+              let b = text.range(of: "}", options: .backwards),
+              let obj = (try? JSONSerialization.jsonObject(
+                  with: Data(String(text[a.lowerBound...b.upperBound]).utf8)))
+                  as? [String: Any] else { return nil }
+        var d = AIThemeEngine.design(prompt: prompt)
+        if let s = obj["name"] as? String, !s.isEmpty { d.name = String(s.prefix(24)) }
+        if let s = obj["style"] as? String, !s.isEmpty { d.style = s }
+        if let p = obj["palette"] as? [String], p.count >= 3 { d.palette = Array(p.prefix(3)) }
+        if let s = obj["accent"] as? String, !s.isEmpty { d.accent = s }
+        if let s = obj["glow"] as? String, !s.isEmpty { d.glow = s }
+        if let s = obj["decoration"] as? String,
+           ["stars", "grid", "rings", "waves", "none"].contains(s) { d.decoration = s }
+        if let n = obj["density"] as? Double { d.density = min(1, max(0, n)) }
+        if let s = obj["iconSet"] as? String,
+           ["standard", "minimal", "linux", "full"].contains(s) { d.iconSet = s }
+        if let b = obj["monochromeIcons"] as? Bool { d.monochromeIcons = b }
+        d.fromLLM = true
+        d.engine = "大模型 · \(model)"
+        return d
+    }
+
+    /// Ask an OpenAI-compatible endpoint for a design. Always calls back on the
+    /// main thread; the caller falls back to the offline design on any failure.
+    static func refineWithLLM(prompt: String, settings: AISettings,
+                              done: @escaping (Result<AIThemeDesign, Error>) -> Void) {
+        guard settings.enabled, !settings.apiKey.isEmpty else {
+            done(.failure(AppError.message("未启用大模型增强")))
+            return
+        }
+        let base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + "/chat/completions") else {
+            done(.failure(AppError.message("API 地址格式不正确")))
+            return
+        }
+        let body: [String: Any] = [
+            "model": settings.model,
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": prompt.isEmpty ? "随机设计一个好看的深色启动主题" : prompt],
+            ] as [[String: String]],
+            "temperature": 0.9,
+        ]
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer " + settings.apiKey, forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            let finish: (Result<AIThemeDesign, Error>) -> Void = { r in
+                DispatchQueue.main.async { done(r) }
+            }
+            if let err = err { finish(.failure(err)); return }
+            guard let data = data else {
+                finish(.failure(AppError.message("大模型没有返回内容"))); return
+            }
+            guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                finish(.failure(AppError.message("大模型返回无法解析"))); return
+            }
+            if let e = root["error"] as? [String: Any], let m = e["message"] as? String {
+                finish(.failure(AppError.message(m))); return
+            }
+            guard let choices = root["choices"] as? [[String: Any]],
+                  let msg = choices.first?["message"] as? [String: Any],
+                  let text = msg["content"] as? String else {
+                finish(.failure(AppError.message("大模型返回缺少 choices"))); return
+            }
+            guard let d = parseLLMDesign(text, prompt: prompt, model: settings.model) else {
+                finish(.failure(AppError.message("大模型没有返回有效的 JSON 设计"))); return
+            }
+            finish(.success(d))
+        }.resume()
+    }
+}
+
+// MARK: - Core Graphics rendering
+
+enum AIThemeRenderer {
+    static let wallpaperSize = CGSize(width: 1600, height: 900)
+
+    static func png(_ size: CGSize, draw: (CGContext, CGSize) -> Void) -> Data? {
+        let w = Int(size.width), h = Int(size.height)
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        draw(ctx, size)
+        guard let cg = ctx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])
+    }
+
+    static func wallpaper(_ d: AIThemeDesign) -> Data? {
+        png(wallpaperSize) { ctx, sz in
+            let W = sz.width, H = sz.height
+            let shift = CGFloat(d.brightness)
+            let p = d.palette
+            let c0 = aiAdjust(p[0], delta: shift)
+            let c1 = aiAdjust(p[1], delta: shift)
+            let c2 = aiAdjust(p[2], delta: shift)
+            let cs = CGColorSpaceCreateDeviceRGB()
+            let grad = CGGradient(colorsSpace: cs, colors: [c0, c1, c2] as CFArray,
+                                  locations: [0, 0.52, 1])!
+            ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: H),
+                                   end: CGPoint(x: W, y: 0), options: [])
+
+            var rng = AIRandom(d.seed)
+            let glowA = aiCGColor(d.glow, alpha: 0.42)
+            let glowB = aiCGColor(d.glow, alpha: 0)
+            let g = CGGradient(colorsSpace: cs, colors: [glowA, glowB] as CFArray,
+                               locations: [0, 1])!
+            let cA = CGPoint(x: W * rng.range(0.15, 0.45), y: H * rng.range(0.35, 0.75))
+            let cB = CGPoint(x: W * rng.range(0.6, 0.9), y: H * rng.range(0.2, 0.7))
+            ctx.drawRadialGradient(g, startCenter: cA, startRadius: 0,
+                                   endCenter: cA, endRadius: W * 0.55, options: [])
+            ctx.drawRadialGradient(g, startCenter: cB, startRadius: 0,
+                                   endCenter: cB, endRadius: W * 0.42, options: [])
+
+            drawDecoration(d, ctx: ctx, size: sz, rng: &rng)
+
+            // Vignette keeps white boot icons readable near the edges.
+            let clear = NSColor(calibratedRed: 0, green: 0, blue: 0, alpha: 0).cgColor
+            let dark = NSColor(calibratedRed: 0.01, green: 0.02, blue: 0.04, alpha: 0.48).cgColor
+            let vig = CGGradient(colorsSpace: cs, colors: [clear, dark] as CFArray,
+                                 locations: [0.5, 1])!
+            let center = CGPoint(x: W / 2, y: H / 2)
+            ctx.drawRadialGradient(vig, startCenter: center, startRadius: 0,
+                                   endCenter: center, endRadius: W * 0.78, options: [])
+        }
+    }
+
+    private static func drawDecoration(_ d: AIThemeDesign, ctx: CGContext,
+                                       size: CGSize, rng: inout AIRandom) {
+        let W = size.width, H = size.height
+        switch d.decoration {
+        case "grid":
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.075))
+            ctx.setLineWidth(1)
+            let step: CGFloat = 76
+            var x: CGFloat = 0
+            while x <= W { ctx.move(to: CGPoint(x: x, y: 0)); ctx.addLine(to: CGPoint(x: x, y: H)); ctx.strokePath(); x += step }
+            var y: CGFloat = 0
+            while y <= H { ctx.move(to: CGPoint(x: 0, y: y)); ctx.addLine(to: CGPoint(x: W, y: y)); ctx.strokePath(); y += step }
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.16))
+            ctx.setLineWidth(2)
+            ctx.stroke(CGRect(x: W * 0.08, y: H * 0.12, width: W * 0.84, height: H * 0.76))
+        case "rings":
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.10))
+            for i in 0..<6 {
+                let r = W * (0.12 + CGFloat(i) * 0.075)
+                ctx.setLineWidth(i % 2 == 0 ? 2 : 1)
+                ctx.strokeEllipse(in: CGRect(x: W * 0.68 - r, y: H * 0.42 - r,
+                                             width: r * 2, height: r * 2))
+            }
+        case "waves":
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.12))
+            for i in 0..<5 {
+                ctx.setLineWidth(i == 0 ? 2 : 1)
+                let baseY = H * (0.18 + CGFloat(i) * 0.16)
+                ctx.move(to: CGPoint(x: 0, y: baseY))
+                var px: CGFloat = 0
+                while px <= W {
+                    let y = baseY + sin(px / 170 + CGFloat(i) * 0.8) * 26
+                    ctx.addLine(to: CGPoint(x: px, y: y))
+                    px += 8
+                }
+                ctx.strokePath()
+            }
+        case "stars":
+            let count = Int(90 + d.density * 210)
+            for _ in 0..<count {
+                let x = rng.range(0, W), y = rng.range(0, H)
+                let r = rng.range(0.5, 1.8)
+                let a = CGFloat(0.12 + rng.next() * 0.5)
+                ctx.setFillColor(NSColor(calibratedRed: 0.92, green: 0.95, blue: 1,
+                                         alpha: a).cgColor)
+                ctx.fillEllipse(in: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+            }
+            for _ in 0..<6 {
+                let x = rng.range(0, W), y = rng.range(0, H), r = rng.range(3, 7)
+                ctx.setFillColor(aiCGColor(d.accent, alpha: 0.22))
+                ctx.fillEllipse(in: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+            }
+        default:
+            break
+        }
+        // A very subtle accent line grounds the composition in every style.
+        ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.10))
+        ctx.setLineWidth(2)
+        ctx.move(to: CGPoint(x: W * 0.06, y: H * 0.09))
+        ctx.addLine(to: CGPoint(x: W * 0.06 + 110, y: H * 0.09))
+        ctx.strokePath()
+    }
+
+    static func selectionBox(_ d: AIThemeDesign) -> Data? {
+        png(CGSize(width: 200, height: 200)) { ctx, sz in
+            let r = CGRect(x: 7, y: 7, width: sz.width - 14, height: sz.height - 14)
+            let path = CGPath(roundedRect: r, cornerWidth: 20, cornerHeight: 20,
+                              transform: nil)
+            ctx.setFillColor(aiCGColor(d.accent, alpha: 0.13))
+            ctx.addPath(path); ctx.fillPath()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.95))
+            ctx.setLineWidth(5)
+            ctx.addPath(path); ctx.strokePath()
+            ctx.setFillColor(aiCGColor(d.accent, alpha: 0.95))
+            for p in [CGPoint(x: 7, y: 7), CGPoint(x: sz.width - 7, y: 7),
+                      CGPoint(x: 7, y: sz.height - 7), CGPoint(x: sz.width - 7, y: sz.height - 7)] {
+                ctx.fillEllipse(in: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10))
+            }
+        }
+    }
+
+    static func cursor(_ d: AIThemeDesign) -> Data? {
+        png(CGSize(width: 24, height: 24)) { ctx, _ in
+            ctx.beginPath()
+            ctx.move(to: CGPoint(x: 2, y: 22))
+            ctx.addLine(to: CGPoint(x: 2, y: 2))
+            ctx.addLine(to: CGPoint(x: 8.5, y: 16))
+            ctx.addLine(to: CGPoint(x: 12.5, y: 16))
+            ctx.addLine(to: CGPoint(x: 17, y: 21))
+            ctx.addLine(to: CGPoint(x: 20, y: 19))
+            ctx.addLine(to: CGPoint(x: 15.5, y: 14))
+            ctx.addLine(to: CGPoint(x: 20, y: 13.5))
+            ctx.closePath()
+            ctx.setFillColor(aiCGColor(d.accent))
+            ctx.fillPath()
+            ctx.setStrokeColor(NSColor(calibratedWhite: 1, alpha: 0.85).cgColor)
+            ctx.setLineWidth(1)
+            ctx.strokePath()
+        }
+    }
+
+    static func dot(_ d: AIThemeDesign) -> Data? {
+        png(CGSize(width: 12, height: 12)) { ctx, sz in
+            ctx.setFillColor(aiCGColor(d.accent))
+            ctx.fillEllipse(in: CGRect(x: 1, y: 1, width: sz.width - 2, height: sz.height - 2))
+        }
+    }
+
+    static func focusBox(_ d: AIThemeDesign) -> Data? {
+        png(CGSize(width: 220, height: 48)) { ctx, sz in
+            let r = CGRect(x: 2, y: 2, width: sz.width - 4, height: sz.height - 4)
+            let path = CGPath(roundedRect: r, cornerWidth: 10, cornerHeight: 10, transform: nil)
+            ctx.setFillColor(aiCGColor(d.accent, alpha: 0.14))
+            ctx.addPath(path); ctx.fillPath()
+            ctx.setStrokeColor(aiCGColor(d.accent, alpha: 0.85))
+            ctx.setLineWidth(2)
+            ctx.addPath(path); ctx.strokePath()
+        }
+    }
+
+    /// Small preview of the boot menu: wallpaper + selection box + icon row.
+    static func preview(_ d: AIThemeDesign) -> NSImage? {
+        guard let data = wallpaper(d), let base = NSImage(data: data) else { return nil }
+        let out = NSImage(size: wallpaperSize)
+        out.lockFocus()
+        base.draw(in: NSRect(origin: .zero, size: wallpaperSize))
+        let boxW: CGFloat = 178, boxH: CGFloat = 178
+        let count = AIThemeRenderer.iconFiles(d).count
+        let gap: CGFloat = 20
+        let total = CGFloat(count) * boxW + CGFloat(max(0, count - 1)) * gap
+        var x = (wallpaperSize.width - total) / 2
+        let y: CGFloat = (wallpaperSize.height - boxH) / 2
+        if let sel = selectionBox(d), let img = NSImage(data: sel) {
+            img.draw(in: NSRect(x: x, y: y, width: boxW, height: boxH))
+        }
+        let accents = iconAccentColors(d, count: count)
+        for i in 0..<count {
+            let rect = NSRect(x: x + 24, y: y + 32, width: boxW - 48, height: boxH - 64)
+            let c = accents[i]
+            let p = NSBezierPath(roundedRect: rect, xRadius: 22, yRadius: 22)
+            c.withAlphaComponent(0.85).setFill(); p.fill()
+            NSColor.white.withAlphaComponent(0.28).setStroke()
+            p.lineWidth = 2; p.stroke()
+            x += boxW + gap
+        }
+        out.unlockFocus()
+        return out
+    }
+
+    private static func iconAccentColors(_ d: AIThemeDesign, count: Int) -> [NSColor] {
+        let base = aiNSColor(d.accent)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        base.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return (0..<count).map { i in
+            let t = CGFloat(i) / CGFloat(max(1, count))
+            return NSColor(calibratedRed: min(1, r * (0.7 + 0.3 * (1 - t)) + 0.06 * t),
+                           green: min(1, g * (0.7 + 0.3 * t) + 0.08),
+                           blue: min(1, b * (0.8 + 0.2 * t) + 0.1), alpha: 1)
+        }
+    }
+
+    static func iconFiles(_ d: AIThemeDesign) -> [(file: String, label: String)] {
+        switch d.iconSet {
+        case "minimal":
+            return [("Apple.icns", "macOS"), ("Windows.icns", "Windows"),
+                    ("Linux.icns", "Linux"), ("Tool.icns", "Tools")]
+        case "linux":
+            return [("Apple.icns", "macOS"), ("Windows.icns", "Windows"),
+                    ("Ubuntu.icns", "Ubuntu"), ("Fedora.icns", "Fedora"),
+                    ("Debian.icns", "Debian"), ("Arch.icns", "Arch"),
+                    ("Manjaro.icns", "Manjaro"), ("Mint.icns", "Linux Mint"),
+                    ("openSUSE.icns", "openSUSE"), ("Tool.icns", "Tools")]
+        case "full":
+            return [("Apple.icns", "macOS"), ("AppleRecv.icns", "Recovery"),
+                    ("AppleTM.icns", "Time Machine"), ("Windows.icns", "Windows"),
+                    ("Linux.icns", "Linux"), ("Ubuntu.icns", "Ubuntu"),
+                    ("Debian.icns", "Debian"), ("Arch.icns", "Arch"),
+                    ("Fedora.icns", "Fedora"), ("HardDrive.icns", "Hard Drive"),
+                    ("Tool.icns", "Tools"), ("Shell.icns", "UEFI Shell"),
+                    ("Restart.icns", "Restart"), ("ShutDown.icns", "Shut Down"),
+                    ("ResetNVRAM.icns", "Reset NVRAM")]
+        default:
+            return [("Apple.icns", "macOS"), ("Windows.icns", "Windows"),
+                    ("Linux.icns", "Linux"), ("AppleRecv.icns", "Recovery"),
+                    ("HardDrive.icns", "Hard Drive"), ("Tool.icns", "Tools"),
+                    ("Restart.icns", "Restart"), ("ShutDown.icns", "Shut Down")]
+        }
+    }
+
+    /// Recolour a bundled ICNS into a monochrome PNG silhouette. Uses CG's
+    /// sourceIn blend so only the icon's alpha survives and the accent colour
+    /// replaces every pixel.
+    static func monochromePNG(_ src: URL, hex: String) -> Data? {
+        guard let img = NSImage(contentsOf: src),
+              let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let cg = rep.cgImage else { return nil }
+        return png(CGSize(width: 256, height: 256)) { ctx, sz in
+            let rect = CGRect(origin: .zero, size: sz)
+            ctx.draw(cg, in: rect)
+            ctx.setBlendMode(.sourceIn)
+            ctx.setFillColor(aiCGColor(hex))
+            ctx.fill(rect)
+        }
+    }
+}
+
+// MARK: - Building a real theme from a design
+
+enum AIThemeBuilder {
+    /// Creates a complete, immediately applicable theme. Returns its id.
+    @discardableResult
+    static func build(_ d: AIThemeDesign) throws -> String {
+        // makeTheme() gives us the full skeleton: default UI chrome, a real
+        // Font.ttf from the system font, manifest and pickerVariant.
+        let theme = try makeTheme(name: d.name, preset: nil, efiMount: nil)
+        let dir = theme.dir
+        let fm = FileManager.default
+
+        let outputs: [(String, Data?)] = [
+            ("Background.png", AIThemeRenderer.wallpaper(d)),
+            ("Selected.png", AIThemeRenderer.selectionBox(d)),
+            ("Cursor.png", AIThemeRenderer.cursor(d)),
+            ("Dot.png", AIThemeRenderer.dot(d)),
+            ("BtnFocus.png", AIThemeRenderer.focusBox(d)),
+        ]
+        for (name, data) in outputs {
+            guard let data = data else { throw AppError.message("渲染 \(name) 失败") }
+            try data.write(to: dir.appendingPathComponent(name), options: .atomic)
+        }
+
+        guard let iconDir = ThemePreset.iconsDir else {
+            throw AppError.message("找不到内置图标池")
+        }
+        var labels: [String: String] = [:]
+        for item in AIThemeRenderer.iconFiles(d) {
+            let src = iconDir.appendingPathComponent(item.file)
+            guard fm.fileExists(atPath: src.path) else { continue }
+            let stem = (item.file as NSString).deletingPathExtension
+            if d.monochromeIcons, let png = AIThemeRenderer.monochromePNG(src, hex: d.accent) {
+                try png.write(to: dir.appendingPathComponent(stem + ".png"), options: .atomic)
+            } else {
+                let dst = dir.appendingPathComponent(item.file)
+                if fm.fileExists(atPath: dst.path) { try? fm.removeItem(at: dst) }
+                try fm.copyItem(at: src, to: dst)
+            }
+            labels[stem] = item.label
+        }
+
+        // Record the design before rebuilding so the label overrides survive.
+        var mf = jsonRead(dir.appendingPathComponent("manifest.json")) ?? [:]
+        mf["labelOverrides"] = labels
+        mf["source"] = d.fromLLM ? "AI 生成 · 大模型设计" : "AI 生成 · 本地智能引擎"
+        try jsonWrite(mf, to: dir.appendingPathComponent("manifest.json"))
+        try rebuildThemeManifest(dir)
+
+        mf = jsonRead(dir.appendingPathComponent("manifest.json")) ?? [:]
+        mf["aiPrompt"] = d.prompt
+        mf["aiStyle"] = d.style
+        mf["aiEngine"] = d.engine
+        mf["source"] = d.fromLLM ? "AI 生成 · 大模型设计" : "AI 生成 · 本地智能引擎"
+        try jsonWrite(mf, to: dir.appendingPathComponent("manifest.json"))
+
+        ThemeLibrary.shared.reload()
+        return theme.id
+    }
+}
