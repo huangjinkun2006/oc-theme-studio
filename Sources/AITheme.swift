@@ -21,14 +21,17 @@ struct AIThemeDesign {
     var decoration = "stars"       // stars / grid / rings / waves / none
     var density = 0.5
     var iconSet = "standard"       // standard / minimal / linux / full
-    var monochromeIcons = false
+    /// Re-colour the bundled OpenCore system icons into the generated palette
+    /// while KEEPING their original artwork (Apple / Windows / Tux / drive…).
+    /// Turning it off copies the stock ICNS verbatim.
+    var restyleIcons = true
     var brightness: Double = 0
     var seed: UInt64 = 1
     var engine = "本地智能引擎"
     var fromLLM = false
 
     var summary: String {
-        "\(style) · \(decorationName) · \(iconSetName)\(monochromeIcons ? " · 统一色调图标" : "")"
+        "\(style) · \(decorationName) · \(iconSetName)\(restyleIcons ? " · 主题配色图标" : " · 原样系统图标")"
     }
     var decorationName: String {
         switch decoration {
@@ -252,8 +255,13 @@ enum AIThemeEngine {
         if low.contains("极简") || low.contains("少量图标") || low.contains("四个图标") { d.iconSet = "minimal" }
         if low.contains("发行版") || low.contains("多系统") || low.contains("linux") { d.iconSet = "linux" }
         if low.contains("全部图标") || low.contains("全量") { d.iconSet = "full" }
-        if low.contains("单色图标") || low.contains("统一色调") || low.contains("剪影") {
-            d.monochromeIcons = true
+        if low.contains("单色图标") || low.contains("统一色调") || low.contains("剪影")
+            || low.contains("配色图标") || low.contains("改造图标") {
+            d.restyleIcons = true
+        }
+        if low.contains("原样图标") || low.contains("保留原图标") || low.contains("原始图标")
+            || low.contains("不要改图标") || low.contains("系统原版图标") {
+            d.restyleIcons = false
         }
         d.name = extractName(p) ?? "\(style.name) · \(suffixes[Int(rng.range(0, CGFloat(suffixes.count))) % suffixes.count])"
         return d
@@ -281,8 +289,8 @@ enum AIThemeEngine {
 
     private static let systemPrompt = """
     你是 OpenCore 启动菜单主题设计师。用户会用中文描述想要的风格，请输出严格 JSON（不要 markdown 代码块、不要解释），字段：
-    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","monochromeIcons":false}
-    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。整体要协调且符合用户描述。
+    {"name":"主题名（<=16字，中文）","style":"风格名","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],"accent":"#RRGGBB","glow":"#RRGGBB","decoration":"stars|grid|rings|waves|none","density":0.0~1.0,"iconSet":"standard|minimal|linux|full","restyleIcons":true}
+    palette 是壁纸的三段渐变色，必须是深色（启动菜单图标是白色的），accent 是选中框/光标的高亮色，glow 是光晕色。restyleIcons 为 true 时把原有系统图标按主题配色重新着色（保留造型），false 时使用原样图标。整体要协调且符合用户描述。
     """
 
     /// Parse the model's free-form reply into a design. Tolerates markdown
@@ -307,7 +315,9 @@ enum AIThemeEngine {
         if let n = obj["density"] as? Double { d.density = min(1, max(0, n)) }
         if let s = obj["iconSet"] as? String,
            ["standard", "minimal", "linux", "full"].contains(s) { d.iconSet = s }
-        if let b = obj["monochromeIcons"] as? Bool { d.monochromeIcons = b }
+        if let b = obj["restyleIcons"] as? Bool { d.restyleIcons = b }
+        // Backwards compatibility with older model replies / presets.
+        else if let b = obj["monochromeIcons"] as? Bool { d.restyleIcons = b }
         d.fromLLM = true
         d.engine = "大模型 · \(model)"
         return d
@@ -546,45 +556,170 @@ enum AIThemeRenderer {
         }
     }
 
-    /// Small preview of the boot menu: wallpaper + selection box + icon row.
+    // MARK: - System icons: restyle the ORIGINAL OpenCore artwork
+    //
+    // The bundled ICNS set holds the real macOS / Windows / Linux / drive
+    // artwork. Recolouring it with `.sourceIn` flattened everything into a
+    // solid square, because most of those icons are a light glyph on an opaque
+    // dark tile. Instead we map each source pixel's LUMINANCE onto a three-stop
+    // palette (dark tile -> accent -> near white). The glyph, the 3D shading
+    // and the alpha all survive, so icons stay recognisable while picking up
+    // the generated theme's colours.
+
+    private struct AIRGB { var r: CGFloat, g: CGFloat, b: CGFloat }
+
+    private static func rgb(_ hex: String) -> AIRGB {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        aiNSColor(hex).getRed(&r, green: &g, blue: &b, alpha: &a)
+        return AIRGB(r: r, g: g, b: b)
+    }
+
+    private static func mix(_ a: AIRGB, _ b: AIRGB, _ t: CGFloat) -> AIRGB {
+        let k = min(1, max(0, t))
+        return AIRGB(r: a.r + (b.r - a.r) * k,
+                     g: a.g + (b.g - a.g) * k,
+                     b: a.b + (b.b - a.b) * k)
+    }
+
+    /// Fixed-layout RGBA bitmap: premultiplied, R,G,B,A order in memory.
+    private static func rgbaContext(_ side: Int) -> CGContext? {
+        let info = CGBitmapInfo.byteOrder32Big.rawValue
+                 | CGImageAlphaInfo.premultipliedLast.rawValue
+        return CGContext(data: nil, width: side, height: side,
+                         bitsPerComponent: 8, bytesPerRow: 0,
+                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info)
+    }
+
+    static func iconSource(_ file: String) -> URL? {
+        guard let dir = ThemePreset.iconsDir else { return nil }
+        let u = dir.appendingPathComponent(file)
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
+    }
+
+    /// Recolour one bundled ICNS into a themed PNG, preserving its artwork.
+    static func styledIconPNG(_ src: URL, _ d: AIThemeDesign,
+                              side: Int = 256) -> Data? {
+        guard let img = NSImage(contentsOf: src),
+              let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let srcCtx = rgbaContext(side), let dstCtx = rgbaContext(side),
+              let srcData = srcCtx.data, let dstData = dstCtx.data else { return nil }
+        srcCtx.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+        let inp = srcData.assumingMemoryBound(to: UInt8.self)
+        let outp = dstData.assumingMemoryBound(to: UInt8.self)
+
+        let dark = mix(rgb(d.palette.first ?? "#101A32"),
+                       AIRGB(r: 0, g: 0, b: 0), 0.32)
+        let mid = rgb(d.accent)
+        let light = mix(mid, AIRGB(r: 1, g: 1, b: 1), 0.80)
+
+        for i in 0..<(side * side) {
+            let o = i * 4
+            let a = CGFloat(inp[o + 3]) / 255
+            let inv: CGFloat = a > 0.004 ? 1 / a : 0   // undo premultiplication
+            let r = min(1, CGFloat(inp[o])     / 255 * inv)
+            let g = min(1, CGFloat(inp[o + 1]) / 255 * inv)
+            let b = min(1, CGFloat(inp[o + 2]) / 255 * inv)
+            let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            let t = pow(min(1, max(0, lum)), 0.85)
+            let c = t < 0.5 ? mix(dark, mid, t / 0.5)
+                            : mix(mid, light, (t - 0.5) / 0.5)
+            outp[o]     = UInt8(min(255, max(0, c.r * a * 255)))
+            outp[o + 1] = UInt8(min(255, max(0, c.g * a * 255)))
+            outp[o + 2] = UInt8(min(255, max(0, c.b * a * 255)))
+            outp[o + 3] = inp[o + 3]
+        }
+        guard let out = dstCtx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: out).representation(using: .png, properties: [:])
+    }
+
+    /// Wrap PNG reps into a real ICNS container (ic07 128px + ic08 256px).
+    /// OpenCanopy reads ICNS natively; embedding PNG chunks needs no subprocess.
+    static func icns(png256: Data, png128: Data? = nil) -> Data {
+        func be(_ v: UInt32) -> Data {
+            var x = v.bigEndian
+            return Data(bytes: &x, count: 4)
+        }
+        var body = Data()
+        if let p = png128 {
+            body.append(Data("ic07".utf8))
+            body.append(be(UInt32(8 + p.count)))
+            body.append(p)
+        }
+        body.append(Data("ic08".utf8))
+        body.append(be(UInt32(8 + png256.count)))
+        body.append(png256)
+        var out = Data("icns".utf8)
+        out.append(be(UInt32(8 + body.count)))
+        out.append(body)
+        return out
+    }
+
+    static func styledIcon(_ src: URL, _ d: AIThemeDesign) -> Data? {
+        guard let big = styledIconPNG(src, d) else { return nil }
+        return icns(png256: big, png128: styledIconPNG(src, d, side: 128))
+    }
+
+    /// The image shown in the generator preview for one icon slot.
+    static func iconImage(_ file: String, _ d: AIThemeDesign) -> NSImage? {
+        guard let src = iconSource(file) else { return nil }
+        if !d.restyleIcons { return NSImage(contentsOf: src) }
+        guard let png = styledIconPNG(src, d) else { return NSImage(contentsOf: src) }
+        return NSImage(data: png)
+    }
+
+    /// Small preview of the boot menu: wallpaper + selection box + REAL system icons.
     static func preview(_ d: AIThemeDesign) -> NSImage? {
         guard let data = wallpaper(d), let base = NSImage(data: data) else { return nil }
         let out = NSImage(size: wallpaperSize)
         out.lockFocus()
         base.draw(in: NSRect(origin: .zero, size: wallpaperSize))
-        let boxW: CGFloat = 178, boxH: CGFloat = 178
-        let count = AIThemeRenderer.iconFiles(d).count
-        let gap: CGFloat = 20
+
+        let items = AIThemeRenderer.iconFiles(d)
+        let count = items.count
+        let rawBox: CGFloat = 178
+        let rawGap: CGFloat = count > 10 ? 8 : 20
+        let rawTotal = CGFloat(count) * rawBox + CGFloat(max(0, count - 1)) * rawGap
+        let scale = min(1, (wallpaperSize.width - 90) / max(1, rawTotal))
+        let boxW = rawBox * scale, boxH = rawBox * scale, gap = rawGap * scale
         let total = CGFloat(count) * boxW + CGFloat(max(0, count - 1)) * gap
         var x = (wallpaperSize.width - total) / 2
         let y: CGFloat = (wallpaperSize.height - boxH) / 2
+
         if let sel = selectionBox(d), let img = NSImage(data: sel) {
             img.draw(in: NSRect(x: x, y: y, width: boxW, height: boxH))
         }
-        let accents = iconAccentColors(d, count: count)
-        for i in 0..<count {
-            let rect = NSRect(x: x + 24, y: y + 32, width: boxW - 48, height: boxH - 64)
-            let c = accents[i]
-            let p = NSBezierPath(roundedRect: rect, xRadius: 22, yRadius: 22)
-            c.withAlphaComponent(0.85).setFill(); p.fill()
-            NSColor.white.withAlphaComponent(0.28).setStroke()
-            p.lineWidth = 2; p.stroke()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: max(12, 22 * scale), weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.92),
+            .paragraphStyle: paragraph
+        ]
+        for (i, item) in items.enumerated() {
+            // A faint tile keeps transparent glyph icons legible on any wallpaper.
+            let tile = NSRect(x: x + 16 * scale, y: y + 38 * scale,
+                              width: boxW - 32 * scale, height: boxH - 76 * scale)
+            let path = NSBezierPath(roundedRect: tile,
+                                    xRadius: 18 * scale, yRadius: 18 * scale)
+            NSColor.black.withAlphaComponent(i == 0 ? 0.10 : 0.24).setFill()
+            path.fill()
+            aiNSColor(d.accent, alpha: i == 0 ? 0.30 : 0.14).setStroke()
+            path.lineWidth = 1.5; path.stroke()
+
+            if let icon = iconImage(item.file, d) {
+                let s = 104 * scale
+                icon.draw(in: NSRect(x: x + (boxW - s) / 2, y: y + 52 * scale,
+                                    width: s, height: s),
+                          from: .zero, operation: .sourceOver, fraction: 1)
+            }
+            (item.label as NSString).draw(
+                in: NSRect(x: x - 8 * scale, y: y + 10 * scale,
+                           width: boxW + 16 * scale, height: 30 * scale),
+                withAttributes: attrs)
             x += boxW + gap
         }
         out.unlockFocus()
         return out
-    }
-
-    private static func iconAccentColors(_ d: AIThemeDesign, count: Int) -> [NSColor] {
-        let base = aiNSColor(d.accent)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        base.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return (0..<count).map { i in
-            let t = CGFloat(i) / CGFloat(max(1, count))
-            return NSColor(calibratedRed: min(1, r * (0.7 + 0.3 * (1 - t)) + 0.06 * t),
-                           green: min(1, g * (0.7 + 0.3 * t) + 0.08),
-                           blue: min(1, b * (0.8 + 0.2 * t) + 0.1), alpha: 1)
-        }
     }
 
     static func iconFiles(_ d: AIThemeDesign) -> [(file: String, label: String)] {
@@ -615,22 +750,6 @@ enum AIThemeRenderer {
         }
     }
 
-    /// Recolour a bundled ICNS into a monochrome PNG silhouette. Uses CG's
-    /// sourceIn blend so only the icon's alpha survives and the accent colour
-    /// replaces every pixel.
-    static func monochromePNG(_ src: URL, hex: String) -> Data? {
-        guard let img = NSImage(contentsOf: src),
-              let tiff = img.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let cg = rep.cgImage else { return nil }
-        return png(CGSize(width: 256, height: 256)) { ctx, sz in
-            let rect = CGRect(origin: .zero, size: sz)
-            ctx.draw(cg, in: rect)
-            ctx.setBlendMode(.sourceIn)
-            ctx.setFillColor(aiCGColor(hex))
-            ctx.fill(rect)
-        }
-    }
 }
 
 // MARK: - Building a real theme from a design
@@ -657,21 +776,22 @@ enum AIThemeBuilder {
             try data.write(to: dir.appendingPathComponent(name), options: .atomic)
         }
 
-        guard let iconDir = ThemePreset.iconsDir else {
-            throw AppError.message("找不到内置图标池")
-        }
         var labels: [String: String] = [:]
         for item in AIThemeRenderer.iconFiles(d) {
-            let src = iconDir.appendingPathComponent(item.file)
-            guard fm.fileExists(atPath: src.path) else { continue }
+            guard let src = AIThemeRenderer.iconSource(item.file) else { continue }
             let stem = (item.file as NSString).deletingPathExtension
-            if d.monochromeIcons, let png = AIThemeRenderer.monochromePNG(src, hex: d.accent) {
-                try png.write(to: dir.appendingPathComponent(stem + ".png"), options: .atomic)
+            // OpenCanopy expects ICNS entries; always write one, either the
+            // original artwork or a palette-restyled version of that artwork.
+            let dst = dir.appendingPathComponent(stem + ".icns")
+            if fm.fileExists(atPath: dst.path) { try? fm.removeItem(at: dst) }
+            if d.restyleIcons, let data = AIThemeRenderer.styledIcon(src, d) {
+                try data.write(to: dst, options: .atomic)
             } else {
-                let dst = dir.appendingPathComponent(item.file)
-                if fm.fileExists(atPath: dst.path) { try? fm.removeItem(at: dst) }
                 try fm.copyItem(at: src, to: dst)
             }
+            // An older build may have left a flat PNG with the same stem.
+            let stalePNG = dir.appendingPathComponent(stem + ".png")
+            if fm.fileExists(atPath: stalePNG.path) { try? fm.removeItem(at: stalePNG) }
             labels[stem] = item.label
         }
 

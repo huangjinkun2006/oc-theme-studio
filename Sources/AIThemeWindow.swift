@@ -85,7 +85,7 @@ final class AIThemeRootView: NSView {
 
     let optionTitle = UI.section("主题选项")
     let iconPopup = NSPopUpButton()
-    let monoChk = UI.checkbox("统一色调图标", on: false)
+    let restyleChk = UI.checkbox("图标按主题改造", on: true)
 
     let aiTitle = UI.section("AI 增强 · 可选")
     let llmChk = UI.checkbox("使用大模型理解提示词", on: false)
@@ -144,7 +144,7 @@ final class AIThemeRootView: NSView {
         infoF.maximumNumberOfLines = 2
 
         var views: [NSView] = [promptTitle, promptScroll, styleTitle, optionTitle,
-                              iconPopup, monoChk, aiTitle, llmChk, settingsBtn, llmNote,
+                              iconPopup, restyleChk, aiTitle, llmChk, settingsBtn, llmNote,
                               previewTitle, previewImage, nameF, infoF, swatchTitle,
                               engineF, bottomLine, statusF, inspireBtn, generateBtn,
                               rerollBtn, saveBtn, closeBtn]
@@ -174,7 +174,7 @@ final class AIThemeRootView: NSView {
         }
         optionTitle.frame = NSRect(x: pad, y: top + 336, width: leftW, height: 15)
         iconPopup.frame = NSRect(x: pad, y: top + 356, width: 190, height: 26)
-        monoChk.frame = NSRect(x: pad + 200, y: top + 359, width: leftW - 200, height: 20)
+        restyleChk.frame = NSRect(x: pad + 200, y: top + 359, width: leftW - 200, height: 20)
         aiTitle.frame = NSRect(x: pad, y: top + 392, width: leftW, height: 15)
         llmChk.frame = NSRect(x: pad, y: top + 412, width: 190, height: 20)
         settingsBtn.frame = NSRect(x: pad + 200, y: top + 410, width: 110, height: 24)
@@ -263,8 +263,9 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         r.llmChk.state = settings.enabled ? .on : .off
         r.iconPopup.target = self
         r.iconPopup.action = #selector(optionChanged)
-        r.monoChk.target = self
-        r.monoChk.action = #selector(optionChanged)
+        r.restyleChk.target = self
+        r.restyleChk.action = #selector(optionChanged)
+        r.restyleChk.toolTip = "保留原有系统图标造型（Apple / Windows / Linux 等），按当前主题配色重新着色；取消勾选则原样使用内置 ICNS。"
         updateLLMLabels()
         inspire()
     }
@@ -288,7 +289,7 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         r.previewImage.image = AIThemeRenderer.preview(d)
         r.nameF.stringValue = d.name
         r.infoF.stringValue = "风格「\(d.style)」 · \(d.decorationName) · \(d.iconSetName)"
-            + (d.monochromeIcons ? " · 统一色调图标" : "") + "\n" + d.summary
+            + "\n" + d.summary
         let colors = d.palette + [d.accent, d.glow]
         for (i, v) in r.swatches.enumerated() where i < colors.count {
             v.layer?.backgroundColor = aiNSColor(colors[i]).cgColor
@@ -311,7 +312,7 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
         default: idx = 0
         }
         r.iconPopup.selectItem(at: idx)
-        r.monoChk.state = design.monochromeIcons ? .on : .off
+        r.restyleChk.state = design.restyleIcons ? .on : .off
     }
 
     private func generate(prompt: String, allowLLM: Bool = true) {
@@ -368,7 +369,7 @@ final class AIThemeWindowController: NSWindowController, NSWindowDelegate {
     @objc private func optionChanged() {
         let map = ["standard", "minimal", "linux", "full"]
         design.iconSet = map[root.iconPopup.indexOfSelectedItem]
-        design.monochromeIcons = root.monoChk.state == .on
+        design.restyleIcons = root.restyleChk.state == .on
         apply(design, note: "已更新主题选项 · 预览已刷新")
     }
 
