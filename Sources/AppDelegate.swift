@@ -26,6 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self.dispatchOpen(files) }
         }
         handleDebugFlags()
+        // 启动后静默检查更新（有更新才弹窗）；同时清理上次更新遗留的备份目录
+        AppUpdater.cleanupStaleBackup()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            AppUpdater.shared.check(manual: false)
+        }
     }
 
     /// Dragging a ZIP / folder onto the app icon installs a theme; dragging a
@@ -298,6 +303,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    // MARK: - 应用内更新
+
+    @objc func checkUpdateAction(_ sender: Any?) {
+        AppUpdater.shared.check(manual: true)
+    }
+
+    @objc func switchUpdateChannel(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let ch = UpdateChannel(rawValue: raw) else { return }
+        AppUpdater.channel = ch
+        // 刷新勾选状态
+        if let menu = sender.menu {
+            for item in menu.items {
+                item.state = (item.representedObject as? String) == raw ? .on : .off
+            }
+        }
+    }
+
     private func buildMenu() {
         let menu = NSMenu()
 
@@ -306,6 +329,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "关于 OC Theme Studio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "检查更新…", action: #selector(checkUpdateAction(_:)), keyEquivalent: ""))
+        let channelItem = NSMenuItem(title: "更新通道", action: nil, keyEquivalent: "")
+        let channelMenu = NSMenu()
+        for ch in [UpdateChannel.server, UpdateChannel.github] {
+            let mi = NSMenuItem(title: ch.label, action: #selector(switchUpdateChannel(_:)), keyEquivalent: "")
+            mi.representedObject = ch.rawValue
+            mi.state = AppUpdater.channel == ch ? .on : .off
+            channelMenu.addItem(mi)
+        }
+        channelItem.submenu = channelMenu
+        appMenu.addItem(channelItem)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏 OC Theme Studio", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
