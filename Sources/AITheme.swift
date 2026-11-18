@@ -418,15 +418,58 @@ enum AIThemeEngine {
 
     /// Parse the model's free-form reply into a design. Tolerates markdown
     /// fences and partial JSON: missing fields keep the offline engine's values.
+    /// Extract a JSON object from arbitrary LLM prose without ever forming an
+    /// invalid String range. Tries every "{" as a potential start, walks with a
+    /// brace-depth counter (ignoring braces inside string literals), and returns
+    /// the first candidate that actually parses as a JSON dictionary.
+    /// A naive first-"{" + last-"}" slice crashes (String.index(after:)
+    /// assertion) when a stray "}" appears before the "{", which DeepSeek and
+    /// some CN models emit — so we validate each candidate instead.
+    static func jsonObject(from text: String) -> [String: Any]? {
+        var i = text.startIndex
+        while i < text.endIndex {
+            if text[i] == "{" {
+                if let end = balancedEnd(in: text, from: i),
+                   let obj = (try? JSONSerialization.jsonObject(
+                       with: Data(text[i...end].utf8))) as? [String: Any] {
+                    return obj
+                }
+            }
+            i = text.index(after: i)
+        }
+        return nil
+    }
+
+    /// Given the index of an opening "{", return the index of its matching "}".
+    private static func balancedEnd(in text: String, from start: String.Index) -> String.Index? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var i = start
+        while i < text.endIndex {
+            let c = text[i]
+            if inString {
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == "\"" { inString = false }
+            } else {
+                if c == "\"" { inString = true }
+                else if c == "{" { depth += 1 }
+                else if c == "}" {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+            }
+            i = text.index(after: i)
+        }
+        return nil
+    }
+
     static func parseLLMDesign(_ content: String, prompt: String,
                                model: String) -> AIThemeDesign? {
         let text = content.replacingOccurrences(of: "```json", with: "")
                           .replacingOccurrences(of: "```", with: "")
-        guard let a = text.range(of: "{"),
-              let b = text.range(of: "}", options: .backwards),
-              let obj = (try? JSONSerialization.jsonObject(
-                  with: Data(String(text[a.lowerBound...b.upperBound]).utf8)))
-                  as? [String: Any] else { return nil }
+        guard let obj = jsonObject(from: text) else { return nil }
         var d = AIThemeEngine.design(prompt: prompt)
         if let s = obj["name"] as? String, !s.isEmpty { d.name = String(s.prefix(24)) }
         if let s = obj["style"] as? String, !s.isEmpty { d.style = s }
