@@ -58,6 +58,7 @@ final class LibraryColumnView: NSView {
     let repairBtn = UI.button("⟳ 修复目录", height: 26)
     let bootBtn = UI.button("识别启动项", height: 26)
     let icnsBtn = UI.button("⇄ 转 ICNS", height: 26)
+    let storeBtn = UI.button("🛒 上传到商店", height: 26)
     let moreBtn = UI.button("⋯ 更多", height: 26)
     let aiBtn = UI.button("✨ AI 一键生成主题", height: 28)
     let scroll: NSScrollView
@@ -66,7 +67,8 @@ final class LibraryColumnView: NSView {
     private let dropOverlay = DropHintView()
     private lazy var buttonsRow: ButtonRowN = ButtonRowN([deleteBtn, editBtn, newBtn])
     private lazy var buttonsRow2: ButtonRowN = ButtonRowN([renameBtn, repairBtn, bootBtn])
-    private lazy var buttonsRow3: ButtonRowN = ButtonRowN([icnsBtn, moreBtn])
+    private lazy var buttonsRow3: ButtonRowN = ButtonRowN([icnsBtn, storeBtn])
+    private lazy var buttonsRow4: ButtonRowN = ButtonRowN([moreBtn])
 
     override init(frame frameRect: NSRect) {
         let pair = makeTable(rowHeight: 62)
@@ -78,8 +80,8 @@ final class LibraryColumnView: NSView {
         aiBtn.bezelColor = .controlAccentColor
         aiBtn.contentTintColor = .white
         aiBtn.font = .systemFont(ofSize: 12, weight: .semibold)
-        for v in [header, importBtn, buttonsRow, buttonsRow2, buttonsRow3, aiBtn,
-                  scroll, foot, dropOverlay] as [NSView] {
+        for v in [header, importBtn, buttonsRow, buttonsRow2, buttonsRow3,
+                  buttonsRow4, aiBtn, scroll, foot, dropOverlay] as [NSView] {
             addSubview(v)
         }
         foot.lineBreakMode = .byWordWrapping
@@ -98,9 +100,10 @@ final class LibraryColumnView: NSView {
         buttonsRow.frame = NSRect(x: pad, y: 68, width: w, height: 26)
         buttonsRow2.frame = NSRect(x: pad, y: 100, width: w, height: 26)
         buttonsRow3.frame = NSRect(x: pad, y: 132, width: w, height: 26)
-        aiBtn.frame = NSRect(x: pad, y: 164, width: w, height: 28)
+        buttonsRow4.frame = NSRect(x: pad, y: 164, width: w, height: 26)
+        aiBtn.frame = NSRect(x: pad, y: 196, width: w, height: 28)
         foot.frame = NSRect(x: pad, y: bounds.height - 66, width: w, height: 52)
-        let tableTop: CGFloat = 200
+        let tableTop: CGFloat = 232
         let tableBottom = bounds.height - 74
         scroll.frame = NSRect(x: pad - 2, y: tableTop, width: w + 4,
                               height: max(60, tableBottom - tableTop))
@@ -359,6 +362,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
     private var designWindow: DesignWindowController?
     private var bootWindow: BootScanWindowController?
     private var storeWindow: StoreWindowController?
+    private var storeUpload: StoreUploadWindowController?
     private var bootSimWindow: BootSimWindowController?
     private var assetWindow: AssetLibraryWindowController?
     private var aiWindow: AIThemeWindowController?
@@ -409,6 +413,8 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         r.library.newBtn.action = #selector(makeNewTheme)
         r.library.icnsBtn.target = self
         r.library.icnsBtn.action = #selector(convertImage)
+        r.library.storeBtn.target = self
+        r.library.storeBtn.action = #selector(uploadSelectedThemeToStore)
         r.library.renameBtn.target = self
         r.library.renameBtn.action = #selector(renameSelectedTheme)
         r.library.repairBtn.target = self
@@ -647,7 +653,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
                                      e.loadCurrentBtn, e.applyBtn, e.restoreBtn,
                                      l.importBtn, l.deleteBtn, l.editBtn, l.newBtn,
                                      l.renameBtn, l.repairBtn, l.bootBtn,
-                                     l.icnsBtn, l.moreBtn]
+                                     l.icnsBtn, l.storeBtn, l.moreBtn]
         for c in controls { c.isEnabled = !on && controlShouldEnable(c) }
         if !on { updateApplyButton() }
     }
@@ -659,7 +665,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         case e.mountBtn: return selectedPartition?.mounted == false
         case e.unmountBtn, e.finderBtn, e.loadCurrentBtn: return selectedPartition?.mounted == true
         case e.restoreBtn: return selectedBackup != nil
-        case l.deleteBtn, l.editBtn: return selectedTheme != nil
+        case l.deleteBtn, l.editBtn, l.storeBtn: return selectedTheme != nil
         default: return true
         }
     }
@@ -1045,6 +1051,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         item("识别系统启动项…", #selector(scanBootEntries))
         m.addItem(.separator())
         item("导出 ZIP…", #selector(exportSelectedTheme))
+        item("上传到主题商店…", #selector(uploadSelectedThemeToStore))
         item("在 Finder 显示", #selector(revealSelectedTheme))
         m.addItem(.separator())
         item("删除主题", #selector(removeSelectedTheme))
@@ -1124,6 +1131,111 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         } catch {
             notify("导出失败", error.localizedDescription, critical: true)
         }
+    }
+
+    // MARK: 上传到主题商店
+
+    /// 把主题库选中的主题打包并打开商店上传面板（预填名称 / 简介 / zip / 预览图）。
+    /// 预览图由 App 用真实 Boot Picker 渲染自动生成，用户仍可在面板里更换。
+    @objc func uploadSelectedThemeToStore() {
+        guard let t = contextTheme() ?? selectedTheme else {
+            notify("先选一个主题", "在左侧主题库里选中一个主题，再上传到主题商店。")
+            return
+        }
+        guard StoreClient.baseURL != nil else {
+            notify("未配置商店地址", "请先在「🛒 主题商店」窗口填写可用的服务器地址。", critical: true)
+            return
+        }
+        let name = t.name
+        runBusy("正在打包「\(name)」…", {
+            () -> Result<(zip: URL, desc: String), Error> in
+            do {
+                Paths.ensure()
+                let zip = Paths.scratch.appendingPathComponent(
+                    "store_upload_\(UUID().uuidString).zip")
+                try exportTheme(t, to: zip)
+                var bits = ["\(t.icons.count) 个启动项", "\(t.fileCount) 个文件"]
+                if !t.sizeText.isEmpty { bits.append(t.sizeText) }
+                if !t.pickerVariant.isEmpty { bits.append("PickerVariant: \(t.pickerVariant)") }
+                let desc = "由 OC Theme Studio 主题库上传。\n" + bits.joined(separator: " · ")
+                return .success((zip, desc))
+            } catch {
+                return .failure(error)
+            }
+        }) { (result: Result<(zip: URL, desc: String), Error>) in
+            switch result {
+            case .failure(let err):
+                self.notify("打包失败", err.localizedDescription, critical: true)
+            case .success(let packed):
+                let previews = self.renderStorePreviews(t)
+                let u = StoreUploadWindowController()
+                u.applyPrefill(name: name, description: packed.desc,
+                               package: packed.zip, previews: previews)
+                u.onSubmitted = { [weak self] in
+                    self?.storeUpload = nil
+                    self?.notify("上传成功", "「\(name)」已发布到主题商店。")
+                    self?.root.statusBar.set("已上传「\(name)」到主题商店", busy: false)
+                }
+                u.onCancel = { [weak self] in self?.storeUpload = nil }
+                self.storeUpload = u
+                u.showSheet(on: self.window!)
+            }
+        }
+    }
+
+    /// 用真实 Boot Picker 渲染 1-3 张预览图 PNG（不同选中项），写到 scratch。
+    /// 必须在主线程调用（AppKit 视图渲染）。
+    private func renderStorePreviews(_ t: Theme) -> [URL] {
+        let count = t.icons.count
+        var picks = [0]
+        if count > 2 { picks.append(count / 2) }
+        if count > 1 { picks.append(count - 1) }
+        var seen = Set<Int>()
+        picks = picks.filter { seen.insert($0).inserted }
+
+        let screenW = 1280, screenH = 800        // 16:10
+        let pad: CGFloat = 18
+        let frame = NSRect(x: 0, y: 0,
+                           width: CGFloat(screenW) + pad * 2,
+                           height: CGFloat(screenH) + pad * 2)
+        var urls: [URL] = []
+        Paths.ensure()
+        for (i, sel) in picks.enumerated() {
+            let v = BootPickerView(frame: frame)
+            v.theme = t
+            v.designLayout = t.layout
+            v.aspect = CGFloat(screenW) / CGFloat(screenH)
+            v.showLabels = true
+            v.selectionVisible = true
+            v.selectedIndex = sel
+            guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+            v.cacheDisplay(in: v.bounds, to: rep)
+            // 裁掉四周 18pt 的舞台边距，只留纯屏幕画面。
+            // bitmapImageRep 是像素尺寸（Retina 下可能是 2x），必须按 scale 换算，
+            // 否则会只截到左上角四分之一。
+            let pngData: Data?
+            let scale = v.bounds.width > 0
+                ? CGFloat(rep.pixelsWide) / v.bounds.width : 1
+            let crop = CGRect(x: pad * scale, y: pad * scale,
+                              width: CGFloat(screenW) * scale,
+                              height: CGFloat(screenH) * scale)
+            if let cg = rep.cgImage,
+               crop.maxX <= CGFloat(cg.width), crop.maxY <= CGFloat(cg.height),
+               let cropped = cg.cropping(to: crop) {
+                pngData = NSBitmapImageRep(cgImage: cropped)
+                    .representation(using: .png, properties: [:])
+            } else {
+                pngData = rep.representation(using: .png, properties: [:])
+            }
+            guard let data = pngData else { continue }
+            let out = Paths.scratch.appendingPathComponent(
+                "store_preview_\(t.id)_\(i).png")
+            do {
+                try data.write(to: out)
+                urls.append(out)
+            } catch { continue }
+        }
+        return urls
     }
 
     @objc func revealSelectedTheme() {
@@ -1231,6 +1343,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         let l = root.library
         l.deleteBtn.isEnabled = !busy && selectedTheme != nil
         l.editBtn.isEnabled = !busy && selectedTheme != nil
+        l.storeBtn.isEnabled = !busy && selectedTheme != nil
         l.newBtn.isEnabled = !busy
         l.importBtn.isEnabled = !busy
     }

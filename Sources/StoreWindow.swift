@@ -541,6 +541,22 @@ final class StoreUploadView: NSView {
     var scrollBox: NSScrollView?
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
 
+    /// 从主题库直接上传时预填：名称、简介、已打包的资源与生成的预览图。
+    func prefill(name: String, description: String, package: URL?, previews: [URL]) {
+        nameF.stringValue = name
+        descField.string = description
+        if let p = package {
+            self.package = p
+            pkgLabel.stringValue = p.lastPathComponent
+            pkgLabel.textColor = .labelColor
+        }
+        if !previews.isEmpty {
+            self.previews = previews
+            prevLabel.stringValue = "已选 \(previews.count) 张（自动生成，可更换）"
+            prevLabel.textColor = .labelColor
+        }
+    }
+
     override func layout() {
         super.layout()
         let pad: CGFloat = 18
@@ -651,6 +667,13 @@ final class StoreUploadWindowController: NSWindowController {
     /// 从主窗口当前 EFI 分区生成脱敏配置包（返回临时 zip）。
     var generateEFIPackage: (() -> Result<URL, Error>)?
     private var view: StoreUploadView { window!.contentView as! StoreUploadView }
+
+    /// 主题库「上传到商店」入口：打开面板前预填名称 / 简介 / 资源包 / 预览图。
+    func applyPrefill(name: String, description: String,
+                      package: URL?, previews: [URL]) {
+        view.prefill(name: name, description: description,
+                     package: package, previews: previews)
+    }
 
     convenience init() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 430),
