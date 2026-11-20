@@ -8,95 +8,248 @@ import AppKit
 // catalog of demo themes. "下载主题" imports the package into the local library;
 // "应用主题" hands the imported Theme back to the main window's apply flow.
 
-private let storeCardID = NSUserInterfaceItemIdentifier("StoreCard")
+/// 明亮应用商店风配色，与网页商店 CSS token 一致（#f4f6fa / #fff / #2563eb …）。
+enum StorePalette {
+    static let bg         = NSColor(calibratedRed: 0.957, green: 0.965, blue: 0.980, alpha: 1)
+    static let surface    = NSColor.white
+    static let surface2   = NSColor(calibratedRed: 0.969, green: 0.976, blue: 0.988, alpha: 1)
+    static let line       = NSColor(calibratedRed: 0.890, green: 0.910, blue: 0.937, alpha: 1)
+    static let line2      = NSColor(calibratedRed: 0.831, green: 0.859, blue: 0.898, alpha: 1)
+    static let text       = NSColor(calibratedRed: 0.106, green: 0.141, blue: 0.188, alpha: 1)
+    static let muted      = NSColor(calibratedRed: 0.475, green: 0.522, blue: 0.584, alpha: 1)
+    static let accent     = NSColor(calibratedRed: 0.145, green: 0.388, blue: 0.922, alpha: 1)
+    static let accentSoft = NSColor(calibratedRed: 0.918, green: 0.945, blue: 1.000, alpha: 1)
+    static let green      = NSColor(calibratedRed: 0.122, green: 0.616, blue: 0.388, alpha: 1)
+}
 
-private func loadRemoteImage(_ url: URL, into iv: NSImageView) {
+private func storeCardShadow(_ layer: CALayer, hover: Bool) {
+    layer.shadowColor = NSColor(calibratedRed: 0.086, green: 0.137, blue: 0.235, alpha: 1).cgColor
+    layer.shadowOpacity = hover ? 0.18 : 0.07
+    layer.shadowRadius = hover ? 12 : 5
+    layer.shadowOffset = NSSize(width: 0, height: hover ? 5 : 2)
+    layer.shouldRasterize = true
+    layer.rasterizationScale = NSScreen.main?.backingScaleFactor ?? 2
+}
+
+/// 图片缓存：详情页翻页 / 网格滚动时避免重复下载同一张预览图。
+private var storeImageCache: [String: NSImage] = [:]
+
+private func loadStoreImage(_ path: String?, into iv: NSImageView,
+                            placeholder: NSImage? = nil) {
+    iv.image = placeholder
+    guard let path = path, !path.isEmpty else { return }
+    if let cached = storeImageCache[path] { iv.image = cached; return }
+    guard let url = StoreClient.imageURL(for: path) else { return }
     if url.scheme == "http" || url.scheme == "https" {
         URLSession.shared.dataTask(with: url) { data, _, _ in
-            if let data = data, let img = NSImage(data: data) {
-                DispatchQueue.main.async { iv.image = img }
-            }
+            guard let data = data, let img = NSImage(data: data) else { return }
+            storeImageCache[path] = img
+            DispatchQueue.main.async { iv.image = img }
         }.resume()
     } else if let img = NSImage(contentsOf: url) {
+        storeImageCache[path] = img
         iv.image = img
     }
 }
 
-final class StoreCardView: NSTableCellView {
+private func loadRemoteImage(_ url: URL, into iv: NSImageView) {
+    loadStoreImage(url.absoluteString, into: iv)
+}
+
+/// 卡片内白底容器：必须 flipped，否则子视图 y 坐标自下而上，文字会倒排。
+private final class StoreCardSurface: NSView {
     override var isFlipped: Bool { true }
-    private let thumb = NSImageView()
-    private let nameF = UI.label("", size: 13, weight: .semibold)
-    private let authorF = UI.label("", size: 11, color: .secondaryLabelColor)
-    private let tagF = UI.label("", size: 9.5, weight: .semibold)
-    private let stateF = UI.label("", size: 10, color: .systemGreen, align: .right)
+}
+
+/// 应用商店风大卡片：16:10 预览图 + 白卡 + 分类/标签 + hover 放大。
+final class StoreCardTile: NSView {
+    override var isFlipped: Bool { true }
+    private let card = StoreCardSurface()
+    private let cover = NSImageView()
+    private let nameF = UI.label("", size: 12.5, weight: .semibold)
+    private let authorF = UI.label("", size: 10.5, color: StorePalette.muted)
+    private let badgeF = UI.label("", size: 9.5, weight: .semibold, align: .center)
+    private let stateF = UI.label("", size: 9.5, weight: .semibold, align: .right)
+    var onSelect: (() -> Void)?
+    private var tracking: NSTrackingArea?
+    private var theme: StoreTheme?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        for v in [thumb, nameF, authorF, tagF, stateF] { addSubview(v) }
-        thumb.imageScaling = .scaleProportionallyUpOrDown
-        thumb.wantsLayer = true
-        thumb.layer?.cornerRadius = 6
-        thumb.layer?.masksToBounds = true
-        tagF.wantsLayer = true
-        tagF.layer?.cornerRadius = 3
+        wantsLayer = true
+        card.wantsLayer = true
+        card.layer?.backgroundColor = StorePalette.surface.cgColor
+        card.layer?.cornerRadius = 12
+        card.layer?.borderWidth = 1
+        card.layer?.borderColor = StorePalette.line.cgColor
+        storeCardShadow(card.layer!, hover: false)
+        cover.imageScaling = .scaleProportionallyUpOrDown
+        cover.wantsLayer = true
+        cover.layer?.cornerRadius = 8
+        cover.layer?.masksToBounds = true
+        cover.layer?.backgroundColor = StorePalette.surface2.cgColor
+        badgeF.wantsLayer = true
+        badgeF.layer?.cornerRadius = 4
+        card.addSubview(cover)
+        card.addSubview(nameF)
+        card.addSubview(authorF)
+        card.addSubview(badgeF)
+        card.addSubview(stateF)
+        addSubview(card)
+        let click = NSClickGestureRecognizer(target: self, action: #selector(clicked))
+        card.addGestureRecognizer(click)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
 
+    @objc private func clicked() { onSelect?() }
+
     func configure(_ t: StoreTheme, image: NSImage?, downloaded: Bool) {
+        theme = t
         nameF.stringValue = t.name
         authorF.stringValue = "by \(t.author)" + (t.sizeText.map { " · \($0)" } ?? "")
-        tagF.isHidden = false
-        let bits = [t.categoryDisplay] + Array(t.tags.prefix(2))
-        tagF.stringValue = " " + bits.joined(separator: " · ") + " "
-        tagF.textColor = .controlAccentColor
-        tagF.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+        let bits = [t.categoryDisplay] + Array(t.tags.prefix(1))
+        badgeF.stringValue = " " + bits.joined(separator: " · ") + " "
+        badgeF.textColor = StorePalette.accent
+        badgeF.layer?.backgroundColor = StorePalette.accentSoft.cgColor
         stateF.stringValue = downloaded ? "已下载 ✓" : (t.localDemo ? "示例" : "")
-        stateF.textColor = downloaded ? .systemGreen : .tertiaryLabelColor
-        if let img = image { thumb.image = img }
-        else if let u = StoreClient.thumbnailURL(for: t) { loadRemoteImage(u, into: thumb) }
+        stateF.textColor = downloaded ? StorePalette.green : StorePalette.muted
+        if let img = image { cover.image = img }
+        else { loadStoreImage(t.previewPaths.first, into: cover) }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = tracking { removeTrackingArea(ta) }
+        tracking = NSTrackingArea(rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        if let ta = tracking { addTrackingArea(ta) }
+    }
+    override func mouseEntered(with event: NSEvent) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            card.animator().layer?.transform = CATransform3DMakeScale(1.035, 1.035, 1)
+        }
+        storeCardShadow(card.layer!, hover: true)
+        card.layer?.borderColor = StorePalette.line2.cgColor
+    }
+    override func mouseExited(with event: NSEvent) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.16
+            card.animator().layer?.transform = CATransform3DIdentity
+        }
+        storeCardShadow(card.layer!, hover: false)
+        card.layer?.borderColor = StorePalette.line.cgColor
     }
 
     override func layout() {
         super.layout()
-        let pad: CGFloat = 12
-        thumb.frame = NSRect(x: pad, y: 10, width: 52, height: 52)
-        let x = pad + 52 + 12
-        let w = bounds.width - x - pad
-        nameF.frame = NSRect(x: x, y: 11, width: w, height: 18)
-        authorF.frame = NSRect(x: x, y: 32, width: w, height: 14)
-        tagF.frame = NSRect(x: x, y: 49, width: min(140, w), height: 14)
-        stateF.frame = NSRect(x: bounds.width - 90, y: 11, width: 78, height: 16)
+        card.frame = bounds.insetBy(dx: 1, dy: 1)
+        let pad: CGFloat = 9
+        let cw = card.bounds.width
+        let imgH = (cw - pad * 2) * 10 / 16          // 16:10
+        cover.frame = NSRect(x: pad, y: pad, width: cw - pad * 2, height: imgH)
+        let y = cover.frame.maxY + 7
+        nameF.frame = NSRect(x: pad, y: y, width: cw - pad * 2 - 58, height: 16)
+        authorF.frame = NSRect(x: pad, y: y + 17, width: cw - pad * 2, height: 13)
+        badgeF.frame = NSRect(x: pad, y: y + 32, width: min(150, cw - pad * 2 - 60), height: 14)
+        stateF.frame = NSRect(x: cw - pad - 56, y: y, width: 56, height: 14)
+    }
+}
+
+/// 自适应网格容器：按可用宽度排 1–3 列，承载 StoreCardTile。
+final class StoreGridContainer: NSView {
+    override var isFlipped: Bool { true }
+    var tiles: [StoreCardTile] = [] {
+        didSet { oldValue.forEach { $0.removeFromSuperview() }; tiles.forEach { addSubview($0) } }
+    }
+
+    /// 按给定宽度排布卡片并返回所需总高度。
+    /// 不放在 layout() 里 setFrameSize —— NSScrollView 的 documentView 在该时机改高度不生效。
+    @discardableResult
+    func arrange(width: CGFloat) -> CGFloat {
+        guard !tiles.isEmpty, width > 20 else { return 0 }
+        let gap: CGFloat = 12
+        let minW: CGFloat = 210
+        let cols = max(1, min(3, Int((width + gap) / (minW + gap))))
+        let tw = (width - gap * CGFloat(cols - 1)) / CGFloat(cols)
+        let th = tw * 10 / 16 + 74
+        for (i, tile) in tiles.enumerated() {
+            let r = i / cols, c = i % cols
+            tile.frame = NSRect(x: CGFloat(c) * (tw + gap), y: CGFloat(r) * (th + gap),
+                                width: tw, height: th)
+        }
+        let rows = (tiles.count + cols - 1) / cols
+        return CGFloat(rows) * th + CGFloat(max(0, rows - 1)) * gap
     }
 }
 
 final class StoreDetailView: NSView {
     override var isFlipped: Bool { true }
-    let header = UI.section("主题详情")
-    let thumb = NSImageView()
+    let header = UI.label("主题详情", size: 11, weight: .semibold, color: StorePalette.muted)
+    let stage = NSView()
+    let mainThumb = NSImageView()
+    let prevBtn = NSButton()
+    let nextBtn = NSButton()
+    let pageF = UI.label("", size: 10, color: StorePalette.muted, align: .center)
+    let thumbs = NSView()
     let nameF = UI.label("", size: 17, weight: .semibold)
-    let authorF = UI.label("", size: 12, color: .secondaryLabelColor)
+    let authorF = UI.label("", size: 12, color: StorePalette.muted)
     let tagsF = UI.label("", size: 11, color: .controlAccentColor)
     let descF = UI.label("", size: 12)
-    let downloadBtn = UI.button("下载主题", height: 32, accent: true)
-    let applyBtn = UI.button("应用主题", height: 32)
+    let downloadBtn = UI.button("下载主题", height: 34, accent: true)
+    let applyBtn = UI.button("应用主题", height: 34)
     let busy = NSProgressIndicator()
-    let hint = UI.label("", size: 10.5, color: .secondaryLabelColor)
+    let hint = UI.label("", size: 10.5, color: StorePalette.muted)
+
+    private var previews: [String] = []
+    private var page = 0
+    private var thumbIVs: [NSImageView] = []
+    private static let perPage = 3
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = StorePalette.surface.cgColor
         descF.lineBreakMode = .byWordWrapping
         descF.maximumNumberOfLines = 12
-        thumb.imageScaling = .scaleProportionallyUpOrDown
-        thumb.wantsLayer = true
-        thumb.layer?.cornerRadius = 8
-        thumb.layer?.masksToBounds = true
-        thumb.layer?.borderWidth = 1
-        thumb.layer?.borderColor = NSColor.separatorColor.cgColor
+        mainThumb.imageScaling = .scaleProportionallyUpOrDown
+        mainThumb.wantsLayer = true
+        mainThumb.layer?.cornerRadius = 10
+        mainThumb.layer?.masksToBounds = true
+        mainThumb.layer?.backgroundColor = StorePalette.surface2.cgColor
+        stage.wantsLayer = true
+        stage.layer?.backgroundColor = StorePalette.surface2.cgColor
+        stage.layer?.cornerRadius = 10
+        stage.layer?.masksToBounds = true
+        for (b, a) in [(prevBtn, #selector(prevPage)), (nextBtn, #selector(nextPage))] {
+            b.bezelStyle = .rounded
+            b.title = a == #selector(prevPage) ? "‹" : "›"
+            b.font = .systemFont(ofSize: 16, weight: .semibold)
+            b.target = self
+            b.action = a
+            b.wantsLayer = true
+            b.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.85).cgColor
+            b.layer?.cornerRadius = 12
+        }
+        thumbIVs = (0..<StoreDetailView.perPage).map { _ in
+            let iv = NSImageView()
+            iv.imageScaling = .scaleProportionallyUpOrDown
+            iv.wantsLayer = true
+            iv.layer?.cornerRadius = 4
+            iv.layer?.masksToBounds = true
+            iv.layer?.borderWidth = 1
+            iv.layer?.borderColor = StorePalette.line.cgColor
+            iv.layer?.backgroundColor = StorePalette.surface2.cgColor
+            return iv
+        }
+        thumbIVs.forEach { thumbs.addSubview($0) }
         busy.style = .spinning
         busy.controlSize = .small
         busy.isDisplayedWhenStopped = false
-        for v in [header, thumb, nameF, authorF, tagsF, descF, downloadBtn,
-                  applyBtn, busy, hint] as [NSView] { addSubview(v) }
+        for v in [header, stage, mainThumb, prevBtn, nextBtn, pageF, thumbs,
+                  nameF, authorF, tagsF, descF, downloadBtn, applyBtn, busy, hint] as [NSView] {
+            addSubview(v)
+        }
         applyBtn.isEnabled = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
@@ -104,12 +257,40 @@ final class StoreDetailView: NSView {
     var theme: StoreTheme? { didSet { refresh() } }
     var localTheme: Theme? { didSet { applyBtn.isEnabled = localTheme != nil } }
 
+    @objc private func prevPage() {
+        guard !previews.isEmpty else { return }
+        page = (page - 1 + max(1, (previews.count + StoreDetailView.perPage - 1) / StoreDetailView.perPage))
+            % max(1, (previews.count + StoreDetailView.perPage - 1) / StoreDetailView.perPage)
+        renderPage()
+    }
+    @objc private func nextPage() {
+        guard !previews.isEmpty else { return }
+        let pages = max(1, (previews.count + StoreDetailView.perPage - 1) / StoreDetailView.perPage)
+        page = (page + 1) % pages
+        renderPage()
+    }
+    private func renderPage() {
+        let pages = max(1, (previews.count + StoreDetailView.perPage - 1) / StoreDetailView.perPage)
+        let start = page * StoreDetailView.perPage
+        for (i, iv) in thumbIVs.enumerated() {
+            let idx = start + i
+            iv.isHidden = idx >= previews.count
+            if !iv.isHidden { loadStoreImage(previews[idx], into: iv) }
+        }
+        pageF.stringValue = previews.count > StoreDetailView.perPage
+            ? "\(page + 1)/\(pages)" : ""
+        let hideNav = previews.count <= StoreDetailView.perPage
+        prevBtn.isHidden = hideNav
+        nextBtn.isHidden = hideNav
+    }
+
     private func refresh() {
         guard let t = theme else {
             nameF.stringValue = ""; authorF.stringValue = ""; tagsF.stringValue = ""
             descF.stringValue = "从左侧选择一个主题查看详情。"
             downloadBtn.title = "下载主题"; hint.stringValue = ""
-            thumb.image = nil; downloadBtn.isEnabled = false; applyBtn.isEnabled = false
+            mainThumb.image = nil; downloadBtn.isEnabled = false; applyBtn.isEnabled = false
+            previews = []; page = 0; renderPage()
             return
         }
         nameF.stringValue = t.name
@@ -123,22 +304,39 @@ final class StoreDetailView: NSView {
             ? "下载后按主窗口所选 EFI 分区安装，写入前自动备份 Resources 与 config.plist。"
             : ""
         downloadBtn.isEnabled = true
-        if let u = StoreClient.thumbnailURL(for: t) { loadRemoteImage(u, into: thumb) }
+        previews = t.previewPaths
+        page = 0
+        if let first = previews.first { loadStoreImage(first, into: mainThumb) }
+        else { mainThumb.image = nil }
+        renderPage()
     }
 
     override func layout() {
         super.layout()
-        let pad: CGFloat = 18
+        let pad: CGFloat = 16
         let w = bounds.width - pad * 2
-        header.frame = NSRect(x: pad, y: 14, width: w, height: 15)
-        thumb.frame = NSRect(x: pad, y: 38, width: w, height: min(220, w * 0.5))
-        nameF.frame = NSRect(x: pad, y: thumb.frame.maxY + 14, width: w, height: 22)
-        authorF.frame = NSRect(x: pad, y: nameF.frame.maxY + 4, width: w, height: 16)
-        tagsF.frame = NSRect(x: pad, y: authorF.frame.maxY + 4, width: w, height: 15)
-        descF.frame = NSRect(x: pad, y: tagsF.frame.maxY + 8, width: w, height: 150)
+        header.frame = NSRect(x: pad, y: 12, width: w, height: 15)
+        let imageH = min(210, (w - 2) * 10 / 16)
+        stage.frame = NSRect(x: pad, y: 34, width: w, height: imageH)
+        mainThumb.frame = stage.frame.insetBy(dx: 0, dy: 0)
+        prevBtn.frame = NSRect(x: pad + 8, y: 34 + imageH / 2 - 13, width: 26, height: 26)
+        nextBtn.frame = NSRect(x: pad + w - 34, y: 34 + imageH / 2 - 13, width: 26, height: 26)
+        let thumbsY = stage.frame.maxY + 6
+        thumbs.frame = NSRect(x: pad, y: thumbsY, width: w, height: 44)
+        let tw = (w - 4 * 5) / 3
+        for (i, iv) in thumbIVs.enumerated() {
+            iv.frame = NSRect(x: 5 + CGFloat(i) * (tw + 5), y: 2, width: tw, height: 40)
+        }
+        pageF.frame = NSRect(x: pad + w - 44, y: thumbsY + 14, width: 40, height: 14)
+        let top = thumbs.frame.maxY + 8
+        nameF.frame = NSRect(x: pad, y: top, width: w, height: 22)
+        authorF.frame = NSRect(x: pad, y: nameF.frame.maxY + 3, width: w, height: 15)
+        tagsF.frame = NSRect(x: pad, y: authorF.frame.maxY + 3, width: w, height: 15)
+        descF.frame = NSRect(x: pad, y: tagsF.frame.maxY + 6, width: w,
+                             height: max(40, bounds.height - top - 62 - 92))
         let bw: CGFloat = (w - 10) / 2
-        downloadBtn.frame = NSRect(x: pad, y: bounds.height - 44, width: bw, height: 32)
-        applyBtn.frame = NSRect(x: pad + bw + 10, y: bounds.height - 44, width: bw, height: 32)
+        downloadBtn.frame = NSRect(x: pad, y: bounds.height - 44, width: bw, height: 34)
+        applyBtn.frame = NSRect(x: pad + bw + 10, y: bounds.height - 44, width: bw, height: 34)
         busy.frame = NSRect(x: bounds.width / 2 - 12, y: bounds.height - 46, width: 24, height: 24)
         hint.frame = NSRect(x: pad, y: bounds.height - 66, width: w, height: 16)
     }
@@ -149,14 +347,15 @@ final class StoreView: NSView {
     let addrField = UI.field("主题商店服务器地址（留空使用内置示例）")
     let refreshBtn = UI.button("刷新", height: 26)
     let uploadBtn = UI.button("上传主题…", height: 26)
-    let listScroll: NSScrollView
-    let listTable: NSTableView
+    let listScroll = NSScrollView()
+    let grid = StoreGridContainer()
     let detail = StoreDetailView()
-    let status = UI.label("就绪", size: 11, color: .secondaryLabelColor)
+    let status = UI.label("就绪", size: 11, color: StorePalette.muted)
     let spinner = NSProgressIndicator()
-    let titleF = UI.label("主题商店", size: 15, weight: .semibold)
-    let catLabel = UI.label("分类", size: 11, color: .secondaryLabelColor)
-    let categoryPop = NSPopUpButton()
+    let titleF = UI.label("主题商店", size: 18, weight: .bold)
+    let subF = UI.label("按完整主题 / 图标 / 背景 / 字体 / EFI 浏览，任何平台都能参与", size: 11, color: StorePalette.muted)
+    let searchF = UI.field("🔍 搜索主题、作者或标签…")
+    var categoryPills: [NSButton] = []
 
     var onApplyTheme: ((Theme) -> Void)?
     fileprivate var themes: [StoreTheme] = []
@@ -165,20 +364,22 @@ final class StoreView: NSView {
     private var busy = false
     private var selectedCategory: StoreCategory = .all
     private var categoryCounts: [StoreCategory: Int] = [:]
+    private var query = ""
 
     override init(frame frameRect: NSRect) {
-        let p = makeTable(rowHeight: 74); listScroll = p.0; listTable = p.1
         super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = StorePalette.bg.cgColor
         spinner.style = .spinning; spinner.controlSize = .small; spinner.isDisplayedWhenStopped = false
-        categoryPop.font = .systemFont(ofSize: 11.5)
-        categoryPop.target = self
-        categoryPop.action = #selector(categoryChanged)
-        updateCategoryTitles()
+        listScroll.drawsBackground = false
+        listScroll.hasVerticalScroller = true
+        listScroll.documentView = grid
         if let u = StoreClient.baseURL { addrField.stringValue = u.absoluteString }
-        for v in [titleF, addrField, refreshBtn, uploadBtn, catLabel, categoryPop,
+        searchF.target = self
+        searchF.action = #selector(searchChanged)
+        for v in [titleF, subF, addrField, refreshBtn, uploadBtn, searchF,
                   listScroll, detail, status, spinner] as [NSView] { addSubview(v) }
-        listTable.target = self
-        listTable.action = #selector(cardClicked)
+        buildPills()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
 
@@ -188,16 +389,32 @@ final class StoreView: NSView {
         StoreClient.saveBaseURL(addrField.stringValue.trimmingCharacters(in: .whitespaces))
     }
 
-    /// 分类下拉标题附带服务端返回的数量；旧服务器没有 /api/categories 时只显示名称。
-    private func updateCategoryTitles() {
-        let current = selectedCategory
-        categoryPop.removeAllItems()
-        for c in StoreCategory.selectable {
-            let suffix = categoryCounts[c].map { " (\($0))" } ?? ""
-            categoryPop.addItem(withTitle: c.label + suffix)
+    private func buildPills() {
+        categoryPills.forEach { $0.removeFromSuperview() }
+        categoryPills = StoreCategory.selectable.map { c in
+            let b = NSButton(title: c.label, target: self, action: #selector(pillClicked))
+            b.bezelStyle = .rounded
+            b.font = .systemFont(ofSize: 11, weight: .medium)
+            b.tag = StoreCategory.selectable.firstIndex(of: c) ?? 0
+            b.wantsLayer = true
+            b.layer?.cornerRadius = 12
+            return b
         }
-        if let idx = StoreCategory.selectable.firstIndex(of: current) {
-            categoryPop.selectItem(at: idx)
+        categoryPills.forEach { addSubview($0) }
+        updatePills()
+    }
+
+    /// 分类胶囊附带服务端数量；旧服务器没有 /api/categories 时只显示名称。
+    private func updatePills() {
+        for (i, b) in categoryPills.enumerated() {
+            let c = StoreCategory.selectable[i]
+            let suffix = categoryCounts[c].map { " \($0)" } ?? ""
+            b.title = c.label + suffix
+            let on = c == selectedCategory
+            b.layer?.backgroundColor = (on ? StorePalette.accent : StorePalette.surface).cgColor
+            b.contentTintColor = on ? .white : StorePalette.muted
+            b.layer?.borderWidth = on ? 0 : 1
+            b.layer?.borderColor = StorePalette.line.cgColor
         }
     }
 
@@ -206,16 +423,40 @@ final class StoreView: NSView {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.categoryCounts = counts
-                self.updateCategoryTitles()
+                self.updatePills()
             }
         }
     }
 
-    @objc private func categoryChanged() {
-        let idx = categoryPop.indexOfSelectedItem
-        guard idx >= 0, idx < StoreCategory.selectable.count else { return }
-        selectedCategory = StoreCategory.selectable[idx]
+    @objc private func pillClicked(_ sender: NSButton) {
+        guard sender.tag >= 0, sender.tag < StoreCategory.selectable.count else { return }
+        selectedCategory = StoreCategory.selectable[sender.tag]
+        updatePills()
         load()
+    }
+
+    @objc private func searchChanged() {
+        query = searchF.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        renderGrid()
+    }
+
+    private func renderGrid() {
+        let list = themes.filter { t in
+            if query.isEmpty { return true }
+            return t.name.lowercased().contains(query)
+                || t.author.lowercased().contains(query)
+                || t.tags.joined(separator: " ").lowercased().contains(query)
+        }
+        grid.tiles = list.map { t in
+            let tile = StoreCardTile()
+            tile.configure(t, image: downloaded[t.id]?.backgroundImage,
+                           downloaded: downloaded[t.id] != nil)
+            tile.onSelect = { [weak self] in self?.select(t) }
+            return tile
+        }
+        let gridW = grid.frame.width > 20 ? grid.frame.width : 340
+        let h = grid.arrange(width: gridW)
+        grid.frame = NSRect(x: 0, y: 0, width: gridW, height: h)
     }
 
     func load() {
@@ -229,7 +470,7 @@ final class StoreView: NSView {
                 switch result {
                 case .success(let ts):
                     self.themes = ts
-                    self.listTable.reloadData()
+                    self.renderGrid()
                     let scope = cat == .all ? "" : " · \(cat.label)"
                     self.status.stringValue = "共 \(ts.count) 项" + scope +
                         (StoreClient.baseURL == nil ? "（离线示例，未连接服务器）" : "")
@@ -250,12 +491,6 @@ final class StoreView: NSView {
     @objc func refresh() {
         refreshCategories()
         load()
-    }
-
-    @objc func cardClicked() {
-        let row = listTable.selectedRow
-        guard row >= 0, row < themes.count else { return }
-        select(themes[row])
     }
 
     private func select(_ t: StoreTheme) {
@@ -300,7 +535,7 @@ final class StoreView: NSView {
             detail.hint.stringValue = "写入前会自动备份 Resources 与 config.plist。"
             downloaded[t.id] = nil
             detail.localTheme = nil
-            listTable.reloadData()
+            renderGrid()
             AppDelegate.shared?.installEFIConfigPackage(zip)
             self.window?.orderOut(nil)
             return
@@ -322,7 +557,7 @@ final class StoreView: NSView {
             }
             downloaded[t.id] = theme
             detail.localTheme = theme
-            listTable.reloadData()
+            renderGrid()
             status.stringValue = "已下载「\(theme.name)」到主题库，可点「应用主题」。"
             detail.hint.stringValue = "已加入本机主题库，点「应用主题」写入 EFI。"
         } catch {
@@ -353,38 +588,48 @@ final class StoreView: NSView {
     override func layout() {
         super.layout()
         let pad: CGFloat = 16
-        titleF.frame = NSRect(x: pad, y: 12, width: 160, height: 20)
+        titleF.frame = NSRect(x: pad, y: 10, width: 200, height: 22)
+        subF.frame = NSRect(x: pad + 130, y: 13, width: bounds.width - pad * 2 - 230, height: 16)
         let toolbarY: CGFloat = 38
         let tfW: CGFloat = bounds.width - pad * 2 - 200
         addrField.frame = NSRect(x: pad, y: toolbarY, width: max(160, tfW), height: 26)
         refreshBtn.frame = NSRect(x: bounds.width - pad - 188, y: toolbarY, width: 90, height: 26)
         uploadBtn.frame = NSRect(x: bounds.width - pad - 90, y: toolbarY, width: 90, height: 26)
-        let catY = toolbarY + 32
-        catLabel.frame = NSRect(x: pad, y: catY + 5, width: 32, height: 16)
-        categoryPop.frame = NSRect(x: pad + 36, y: catY, width: 160, height: 26)
-        let top = catY + 34
-        let leftW: CGFloat = 320
-        listScroll.frame = NSRect(x: pad - 2, y: top, width: leftW,
+        let searchY = toolbarY + 32
+        searchF.frame = NSRect(x: pad, y: searchY, width: 240, height: 26)
+        let pillY = searchY + 34
+        var px = pad
+        for b in categoryPills {
+            let w = b.title.size(withAttributes: [.font: b.font!]).width + 34
+            b.frame = NSRect(x: px, y: pillY, width: w, height: 24)
+            px += w + 8
+        }
+        let top = pillY + 32
+        let leftW: CGFloat = max(340, bounds.width * 0.56)
+        listScroll.frame = NSRect(x: pad, y: top, width: leftW,
                                   height: bounds.height - top - 28)
-        detail.frame = NSRect(x: pad + leftW + 8, y: top,
-                              width: bounds.width - pad * 2 - leftW - 8,
+        let gridW = leftW - 14
+        let gridH = grid.arrange(width: gridW)
+        grid.frame = NSRect(x: 0, y: 0, width: gridW, height: gridH)
+        detail.frame = NSRect(x: pad + leftW + 10, y: top,
+                              width: bounds.width - pad * 2 - leftW - 10,
                               height: bounds.height - top - 28)
         spinner.frame = NSRect(x: pad, y: 6, width: 16, height: 16)
         status.frame = NSRect(x: pad + 22, y: 6, width: bounds.width - pad * 2 - 22, height: 16)
     }
 }
 
-final class StoreWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+final class StoreWindowController: NSWindowController {
     private var view: StoreView { window!.contentView as! StoreView }
     private var upload: StoreUploadWindowController?
     private var configured = false
 
     convenience init() {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 660),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 720),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = "主题商店"
-        w.minSize = NSSize(width: 760, height: 580)
+        w.minSize = NSSize(width: 880, height: 620)
         w.center()
         let size = w.contentRect(forFrameRect: w.frame).size
         w.contentView = StoreView(frame: NSRect(origin: .zero, size: size))
@@ -400,8 +645,6 @@ final class StoreWindowController: NSWindowController, NSTableViewDataSource, NS
         configured = true
         let v = view
         v.controller = self
-        v.listTable.dataSource = self
-        v.listTable.delegate = self
         v.refreshBtn.target = v; v.refreshBtn.action = #selector(StoreView.refresh)
         v.uploadBtn.target = v; v.uploadBtn.action = #selector(StoreView.openUpload)
         v.onApplyTheme = { [weak self] theme in
@@ -444,16 +687,6 @@ final class StoreWindowController: NSWindowController, NSTableViewDataSource, NS
         u.showSheet(on: w)
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { view.themes.count }
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let t = view.themes[row]
-        let v = (tableView.makeView(withIdentifier: storeCardID, owner: self) as? StoreCardView)
-            ?? StoreCardView()
-        v.identifier = storeCardID
-        let img = view.downloaded[t.id].flatMap { $0.backgroundImage }
-        v.configure(t, image: img, downloaded: view.downloaded[t.id] != nil)
-        return v
-    }
 }
 
 // MARK: - Upload sheet

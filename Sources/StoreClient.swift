@@ -48,6 +48,15 @@ struct StoreTheme: Codable, Identifiable {
     let sizeText: String?
     let updated: String?
     let downloads: Int?
+    let previews: [String]?      // 详情页多预览图 URL（封面排最前）
+    let cover: String?           // 自定义封面文件名（服务端 meta.cover）
+
+    /// 多预览图 URL（远程 /files/... 拼基址；preset:// 用内置背景）。
+    var previewPaths: [String] {
+        if let ps = previews, !ps.isEmpty { return ps }
+        if let t = thumbnail, !t.isEmpty { return [t] }
+        return []
+    }
 
     var categoryKind: StoreCategory {
         StoreCategory(rawValue: category ?? StoreCategory.theme.rawValue) ?? .theme
@@ -162,7 +171,9 @@ final class StoreClient {
             download: d["download"] as? String,
             sizeText: d["sizeText"] as? String,
             updated: d["updated"] as? String,
-            downloads: d["downloads"] as? Int)
+            downloads: d["downloads"] as? Int,
+            previews: d["previews"] as? [String],
+            cover: d["cover"] as? String)
     }
 
     // MARK: Thumbnails
@@ -175,8 +186,26 @@ final class StoreClient {
                 .appendingPathComponent(p.background)
             if FileManager.default.fileExists(atPath: u.path) { return u }
         }
-        guard let base = baseURL, let t = theme.thumbnail,
-              t.hasPrefix("/") else { return nil }
+        return imageURL(for: theme.thumbnail)
+    }
+
+    /// 任意商店图片路径 -> 可加载 URL（preset:// / 绝对 URL / 相对 /files/...）。
+    static func imageURL(for path: String?) -> URL? {
+        guard let t = path, !t.isEmpty else { return nil }
+        if t.hasPrefix("http://") || t.hasPrefix("https://") {
+            return URL(string: t)
+        }
+        if t.hasPrefix("preset://") {
+            let pid = String(t.dropFirst("preset://".count))
+            if let p = ThemePreset.all().first(where: { $0.id == pid }),
+               let root = ThemePreset.root, !p.background.isEmpty {
+                let u = root.appendingPathComponent("icons", isDirectory: true)
+                    .appendingPathComponent(p.background)
+                if FileManager.default.fileExists(atPath: u.path) { return u }
+            }
+            return nil
+        }
+        guard let base = baseURL, t.hasPrefix("/") else { return nil }
         return base.appendingPathComponent(t)
     }
 
