@@ -48,6 +48,7 @@ struct StoreTheme: Codable, Identifiable {
     let sizeText: String?
     let updated: String?
     let downloads: Int?
+    let commentCount: Int?       // 评论数（详情页统计条）
     let previews: [String]?      // 详情页多预览图 URL（封面排最前）
     let cover: String?           // 自定义封面文件名（服务端 meta.cover）
 
@@ -172,6 +173,7 @@ final class StoreClient {
             sizeText: d["sizeText"] as? String,
             updated: d["updated"] as? String,
             downloads: d["downloads"] as? Int,
+            commentCount: d["commentCount"] as? Int,
             previews: d["previews"] as? [String],
             cover: d["cover"] as? String)
     }

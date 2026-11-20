@@ -193,17 +193,32 @@ final class StoreDetailView: NSView {
     let pageF = UI.label("", size: 10, color: StorePalette.muted, align: .center)
     let thumbs = NSView()
     let nameF = UI.label("", size: 17, weight: .semibold)
-    let authorF = UI.label("", size: 12, color: StorePalette.muted)
-    let tagsF = UI.label("", size: 11, color: .controlAccentColor)
+    let avatar = UI.label("O", size: 13, weight: .bold, color: .white, align: .center)
+    let authorName = UI.label("", size: 12, weight: .semibold)
+    let authorF = UI.label("", size: 11, color: StorePalette.muted)
+    let statBox = NSView()
+    var statLabels: [NSTextField] = []
+    var statKeys: [NSTextField] = []
+    let descHead = UI.label("主题简介", size: 10.5, weight: .semibold, color: StorePalette.muted)
     let descF = UI.label("", size: 12)
+    let descMore = NSButton()
+    let tagsHead = UI.label("标签", size: 10.5, weight: .semibold, color: StorePalette.muted)
+    let tagsF = UI.label("", size: 11, color: StorePalette.accent)
+    let relatedHead = UI.label("同分类推荐", size: 10.5, weight: .semibold, color: StorePalette.muted)
+    let related = NSView()
     let downloadBtn = UI.button("下载主题", height: 34, accent: true)
     let applyBtn = UI.button("应用主题", height: 34)
     let busy = NSProgressIndicator()
     let hint = UI.label("", size: 10.5, color: StorePalette.muted)
 
+    /// 同分类推荐点击回调（由 StoreView 注入，复用其 select(_:)）。
+    var onPickRelated: ((StoreTheme) -> Void)?
+    private var relatedThemes: [StoreTheme] = []
+    private var relatedBtns: [NSButton] = []
     private var previews: [String] = []
     private var page = 0
     private var thumbIVs: [NSImageView] = []
+    private var descExpanded = false
     private static let perPage = 3
 
     override init(frame frameRect: NSRect) {
@@ -211,7 +226,46 @@ final class StoreDetailView: NSView {
         wantsLayer = true
         layer?.backgroundColor = StorePalette.surface.cgColor
         descF.lineBreakMode = .byWordWrapping
-        descF.maximumNumberOfLines = 12
+        descF.maximumNumberOfLines = 4
+        avatar.wantsLayer = true
+        avatar.layer?.cornerRadius = 15
+        avatar.layer?.backgroundColor = StorePalette.accent.cgColor
+        statBox.wantsLayer = true
+        statBox.layer?.backgroundColor = StorePalette.surface2.cgColor
+        statBox.layer?.cornerRadius = 9
+        statBox.layer?.borderWidth = 1
+        statBox.layer?.borderColor = StorePalette.line.cgColor
+        statLabels = (0..<4).map { _ in
+            let l = UI.label("—", size: 13, weight: .bold, color: StorePalette.text, align: .center)
+            l.lineBreakMode = .byClipping
+            return l
+        }
+        statKeys = ["下载", "评论", "大小", "版本"].map {
+            UI.label($0, size: 9.5, color: StorePalette.muted, align: .center)
+        }
+        statLabels.forEach { statBox.addSubview($0) }
+        statKeys.forEach { statBox.addSubview($0) }
+        descMore.bezelStyle = .rounded
+        descMore.title = "展开全文"
+        descMore.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        descMore.contentTintColor = StorePalette.accent
+        descMore.target = self
+        descMore.action = #selector(toggleDesc)
+        descMore.isBordered = false
+        relatedBtns = (0..<6).map { _ in
+            let b = NSButton()
+            b.bezelStyle = .rounded
+            b.font = .systemFont(ofSize: 10.5, weight: .medium)
+            b.target = self
+            b.action = #selector(relatedClicked(_:))
+            b.wantsLayer = true
+            b.layer?.cornerRadius = 6
+            b.layer?.borderWidth = 1
+            b.layer?.borderColor = StorePalette.line.cgColor
+            b.layer?.backgroundColor = StorePalette.surface.cgColor
+            return b
+        }
+        relatedBtns.forEach { related.addSubview($0) }
         mainThumb.imageScaling = .scaleProportionallyUpOrDown
         mainThumb.wantsLayer = true
         mainThumb.layer?.cornerRadius = 10
@@ -247,7 +301,10 @@ final class StoreDetailView: NSView {
         busy.controlSize = .small
         busy.isDisplayedWhenStopped = false
         for v in [header, stage, mainThumb, prevBtn, nextBtn, pageF, thumbs,
-                  nameF, authorF, tagsF, descF, downloadBtn, applyBtn, busy, hint] as [NSView] {
+                  nameF, avatar, authorName, authorF, statBox,
+                  descHead, descF, descMore, tagsHead, tagsF,
+                  relatedHead, related,
+                  downloadBtn, applyBtn, busy, hint] as [NSView] {
             addSubview(v)
         }
         applyBtn.isEnabled = false
@@ -284,20 +341,67 @@ final class StoreDetailView: NSView {
         nextBtn.isHidden = hideNav
     }
 
+    /// 四项统计：下载 / 评论 / 大小 / 版本。评论数来自 to_public 的 commentCount。
+    func renderStats(_ t: StoreTheme?) {
+        guard let t = t else {
+            statLabels.forEach { $0.stringValue = "—" }
+            return
+        }
+        let vals = ["\(t.downloads ?? 0)", "\(t.commentCount ?? 0)",
+                    t.sizeText ?? "—", t.version.map { "v\($0)" } ?? "—"]
+        for (i, l) in statLabels.enumerated() { l.stringValue = i < vals.count ? vals[i] : "—" }
+    }
+
+    /// 同分类推荐（最多 6 个），复用 StoreView 已加载的列表。
+    func setRelated(_ list: [StoreTheme]) {
+        relatedThemes = list
+        for (i, b) in relatedBtns.enumerated() {
+            let on = i < list.count
+            b.isHidden = !on
+            if on { b.title = list[i].name }
+        }
+        relatedHead.isHidden = list.isEmpty
+    }
+
+    @objc private func relatedClicked(_ sender: NSButton) {
+        guard let idx = relatedBtns.firstIndex(of: sender), idx < relatedThemes.count else { return }
+        onPickRelated?(relatedThemes[idx])
+    }
+
+    @objc private func toggleDesc() {
+        descExpanded.toggle()
+        descF.maximumNumberOfLines = descExpanded ? 0 : 4
+        descMore.title = descExpanded ? "收起" : "展开全文"
+        needsLayout = true
+    }
+
     private func refresh() {
         guard let t = theme else {
-            nameF.stringValue = ""; authorF.stringValue = ""; tagsF.stringValue = ""
+            nameF.stringValue = ""; authorF.stringValue = ""; authorName.stringValue = ""
+            tagsF.stringValue = ""; avatar.stringValue = "O"
             descF.stringValue = "从左侧选择一个主题查看详情。"
             downloadBtn.title = "下载主题"; hint.stringValue = ""
             mainThumb.image = nil; downloadBtn.isEnabled = false; applyBtn.isEnabled = false
-            previews = []; page = 0; renderPage()
+            previews = []; page = 0; renderPage(); renderStats(nil); setRelated([])
             return
         }
         nameF.stringValue = t.name
-        authorF.stringValue = "by \(t.author)" + (t.updated.map { " · 更新于 \($0)" } ?? "")
+        let author = t.author.isEmpty ? "匿名" : t.author
+        authorName.stringValue = "by \(author)"
+        authorF.stringValue = t.updated.map { "更新于 \($0)" } ?? ""
+        avatar.stringValue = String(author.prefix(1)).uppercased()
+        let colors: [NSColor] = [.systemBlue, .systemTeal, .systemPurple, .systemOrange, .systemPink]
+        var hv: UInt32 = 0
+        for c in author.unicodeScalars { hv = hv &* 31 &+ c.value }
+        avatar.layer?.backgroundColor = colors[Int(hv % UInt32(colors.count))].cgColor
         let cat = "类型：" + t.categoryDisplay
         tagsF.stringValue = t.tags.isEmpty ? cat : cat + "   #" + t.tags.joined(separator: "  #")
         descF.stringValue = t.description
+        descExpanded = false
+        descF.maximumNumberOfLines = 4
+        descMore.title = "展开全文"
+        descMore.isHidden = t.description.count <= 70
+        renderStats(t)
         let isEFI = t.categoryKind == .efi
         downloadBtn.title = isEFI ? "下载并安装…" : "下载主题"
         hint.stringValue = isEFI
@@ -313,32 +417,60 @@ final class StoreDetailView: NSView {
 
     override func layout() {
         super.layout()
-        let pad: CGFloat = 16
+        let pad: CGFloat = 14
         let w = bounds.width - pad * 2
-        header.frame = NSRect(x: pad, y: 12, width: w, height: 15)
-        let imageH = min(210, (w - 2) * 10 / 16)
-        stage.frame = NSRect(x: pad, y: 34, width: w, height: imageH)
-        mainThumb.frame = stage.frame.insetBy(dx: 0, dy: 0)
-        prevBtn.frame = NSRect(x: pad + 8, y: 34 + imageH / 2 - 13, width: 26, height: 26)
-        nextBtn.frame = NSRect(x: pad + w - 34, y: 34 + imageH / 2 - 13, width: 26, height: 26)
-        let thumbsY = stage.frame.maxY + 6
-        thumbs.frame = NSRect(x: pad, y: thumbsY, width: w, height: 44)
-        let tw = (w - 4 * 5) / 3
+        header.frame = NSRect(x: pad, y: 10, width: w, height: 14)
+        let imageH = min(180, (w - 2) * 10 / 16)
+        stage.frame = NSRect(x: pad, y: 28, width: w, height: imageH)
+        mainThumb.frame = stage.frame
+        prevBtn.frame = NSRect(x: pad + 8, y: 28 + imageH / 2 - 13, width: 26, height: 26)
+        nextBtn.frame = NSRect(x: pad + w - 34, y: 28 + imageH / 2 - 13, width: 26, height: 26)
+        let thumbsY = stage.frame.maxY + 5
+        thumbs.frame = NSRect(x: pad, y: thumbsY, width: w - 40, height: 38)
+        let tw = (thumbs.bounds.width - 4 * 4) / 3
         for (i, iv) in thumbIVs.enumerated() {
-            iv.frame = NSRect(x: 5 + CGFloat(i) * (tw + 5), y: 2, width: tw, height: 40)
+            iv.frame = NSRect(x: 4 + CGFloat(i) * (tw + 4), y: 1, width: tw, height: 36)
         }
-        pageF.frame = NSRect(x: pad + w - 44, y: thumbsY + 14, width: 40, height: 14)
-        let top = thumbs.frame.maxY + 8
-        nameF.frame = NSRect(x: pad, y: top, width: w, height: 22)
-        authorF.frame = NSRect(x: pad, y: nameF.frame.maxY + 3, width: w, height: 15)
-        tagsF.frame = NSRect(x: pad, y: authorF.frame.maxY + 3, width: w, height: 15)
-        descF.frame = NSRect(x: pad, y: tagsF.frame.maxY + 6, width: w,
-                             height: max(40, bounds.height - top - 62 - 92))
+        pageF.frame = NSRect(x: pad + w - 36, y: thumbsY + 12, width: 34, height: 14)
+
+        var y = thumbs.frame.maxY + 8
+        nameF.frame = NSRect(x: pad, y: y, width: w, height: 22); y += 24
+        // 作者行：圆形头像 + 昵称 + 更新时间
+        avatar.frame = NSRect(x: pad, y: y, width: 30, height: 30)
+        authorName.frame = NSRect(x: pad + 38, y: y + 1, width: w - 38, height: 15)
+        authorF.frame = NSRect(x: pad + 38, y: y + 16, width: w - 38, height: 13)
+        y += 34
+        // 四项统计条
+        statBox.frame = NSRect(x: pad, y: y, width: w, height: 42); y += 50
+        let cw = statBox.bounds.width / 4
+        for (i, l) in statLabels.enumerated() {
+            l.frame = NSRect(x: CGFloat(i) * cw, y: 4, width: cw, height: 17)
+            statKeys[i].frame = NSRect(x: CGFloat(i) * cw, y: 22, width: cw, height: 14)
+        }
+
+        descHead.frame = NSRect(x: pad, y: y, width: w, height: 14); y += 16
+        let descH: CGFloat = descExpanded
+            ? min(150, max(40, bounds.height - y - 150))
+            : min(72, max(34, bounds.height - y - 150))
+        descF.frame = NSRect(x: pad, y: y, width: w, height: descH)
+        y += descH + 2
+        descMore.frame = NSRect(x: pad, y: y, width: 80, height: 18); y += 22
+
+        tagsHead.frame = NSRect(x: pad, y: y, width: w, height: 14); y += 16
+        tagsF.frame = NSRect(x: pad, y: y, width: w, height: 16); y += 20
+
+        relatedHead.frame = NSRect(x: pad, y: y, width: w, height: 14); y += 16
+        related.frame = NSRect(x: pad, y: y, width: w, height: 34)
+        let bw2 = (w - 5 * 5) / 6
+        for (i, b) in relatedBtns.enumerated() {
+            b.frame = NSRect(x: 5 + CGFloat(i) * (bw2 + 5), y: 0, width: bw2, height: 34)
+        }
+
         let bw: CGFloat = (w - 10) / 2
         downloadBtn.frame = NSRect(x: pad, y: bounds.height - 44, width: bw, height: 34)
         applyBtn.frame = NSRect(x: pad + bw + 10, y: bounds.height - 44, width: bw, height: 34)
         busy.frame = NSRect(x: bounds.width / 2 - 12, y: bounds.height - 46, width: 24, height: 24)
-        hint.frame = NSRect(x: pad, y: bounds.height - 66, width: w, height: 16)
+        hint.frame = NSRect(x: pad, y: bounds.height - 64, width: w, height: 16)
     }
 }
 
@@ -501,6 +633,10 @@ final class StoreView: NSView {
         detail.downloadBtn.target = self
         detail.applyBtn.action = #selector(applySelected)
         detail.applyBtn.target = self
+        // 同分类推荐（最多 6 个），点击复用同一个 select 流程
+        let same = themes.filter { $0.id != t.id && $0.categoryKind == t.categoryKind }.prefix(6)
+        detail.setRelated(Array(same))
+        detail.onPickRelated = { [weak self] picked in self?.select(picked) }
     }
 
     @objc func downloadSelected() {
