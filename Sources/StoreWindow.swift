@@ -56,6 +56,45 @@ private func loadRemoteImage(_ url: URL, into iv: NSImageView) {
     loadStoreImage(url.absoluteString, into: iv)
 }
 
+/// 按名字稳定取头像底色，与网页 avatarColor 保持同一组颜色。
+func storeAvatarTint(_ name: String) -> NSColor {
+    let colors: [NSColor] = [.systemBlue, .systemTeal, .systemPurple,
+                             .systemOrange, .systemPink, .systemBlue]
+    var h: UInt32 = 0
+    for c in name.unicodeScalars { h = h &* 31 &+ c.value }
+    return colors[Int(h % UInt32(colors.count))]
+}
+
+func styleAvatarButton(_ b: NSButton, size: CGFloat) {
+    b.bezelStyle = .rounded
+    b.isBordered = false
+    b.font = .systemFont(ofSize: max(9, size * 0.46), weight: .semibold)
+    b.contentTintColor = .white
+    b.imagePosition = .imageOnly
+    b.imageScaling = .scaleAxesIndependently
+    b.wantsLayer = true
+    b.layer?.cornerRadius = size / 2
+    b.layer?.masksToBounds = true
+    b.layer?.backgroundColor = StorePalette.accent.cgColor
+}
+
+/// 头像按钮：有远程图片显示图片（SVG 会自然失败并保留首字母），否则显示首字母。
+func setAvatarButton(_ b: NSButton, name: String, path: String?, size: CGFloat) {
+    let initial = String(name.prefix(1)).uppercased()
+    b.title = initial.isEmpty ? "?" : initial
+    b.image = nil
+    b.layer?.backgroundColor = storeAvatarTint(name).cgColor
+    guard let path = path, !path.isEmpty else { return }
+    if let cached = storeImageCache[path] { b.image = cached; return }
+    guard let url = StoreClient.imageURL(for: path),
+          url.scheme == "http" || url.scheme == "https" else { return }
+    URLSession.shared.dataTask(with: url) { data, _, _ in
+        guard let data = data, let img = NSImage(data: data) else { return }
+        storeImageCache[path] = img
+        DispatchQueue.main.async { b.image = img }
+    }.resume()
+}
+
 /// 卡片内白底容器：必须 flipped，否则子视图 y 坐标自下而上，文字会倒排。
 private final class StoreCardSurface: NSView {
     override var isFlipped: Bool { true }
@@ -67,10 +106,12 @@ final class StoreCardTile: NSView {
     private let card = StoreCardSurface()
     private let cover = NSImageView()
     private let nameF = UI.label("", size: 12.5, weight: .semibold)
-    private let authorF = UI.label("", size: 10.5, color: StorePalette.muted)
+    private let authorAv = NSButton()
+    private let authorF = NSButton()
     private let badgeF = UI.label("", size: 9.5, weight: .semibold, align: .center)
     private let stateF = UI.label("", size: 9.5, weight: .semibold, align: .right)
     var onSelect: (() -> Void)?
+    var onAuthor: (() -> Void)?
     private var tracking: NSTrackingArea?
     private var theme: StoreTheme?
 
@@ -90,8 +131,18 @@ final class StoreCardTile: NSView {
         cover.layer?.backgroundColor = StorePalette.surface2.cgColor
         badgeF.wantsLayer = true
         badgeF.layer?.cornerRadius = 4
+        styleAvatarButton(authorAv, size: 16)
+        authorAv.target = self
+        authorAv.action = #selector(authorClicked)
+        authorF.bezelStyle = .rounded
+        authorF.isBordered = false
+        authorF.font = .systemFont(ofSize: 10.5)
+        authorF.contentTintColor = StorePalette.muted
+        authorF.target = self
+        authorF.action = #selector(authorClicked)
         card.addSubview(cover)
         card.addSubview(nameF)
+        card.addSubview(authorAv)
         card.addSubview(authorF)
         card.addSubview(badgeF)
         card.addSubview(stateF)
@@ -102,11 +153,17 @@ final class StoreCardTile: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
 
     @objc private func clicked() { onSelect?() }
+    @objc private func authorClicked() { onAuthor?() }
 
     func configure(_ t: StoreTheme, image: NSImage?, downloaded: Bool) {
         theme = t
         nameF.stringValue = t.name
-        authorF.stringValue = "by \(t.author)" + (t.sizeText.map { " · \($0)" } ?? "")
+        authorF.title = "by \(t.author)" + (t.sizeText.map { " · \($0)" } ?? "")
+        let authorKey = t.authorLogin ?? t.author
+        authorAv.isHidden = authorKey.isEmpty
+        if !authorKey.isEmpty {
+            setAvatarButton(authorAv, name: t.author, path: t.authorAvatar, size: 16)
+        }
         let bits = [t.categoryDisplay] + Array(t.tags.prefix(1))
         badgeF.stringValue = " " + bits.joined(separator: " · ") + " "
         badgeF.textColor = StorePalette.accent
@@ -150,7 +207,8 @@ final class StoreCardTile: NSView {
         cover.frame = NSRect(x: pad, y: pad, width: cw - pad * 2, height: imgH)
         let y = cover.frame.maxY + 7
         nameF.frame = NSRect(x: pad, y: y, width: cw - pad * 2 - 58, height: 16)
-        authorF.frame = NSRect(x: pad, y: y + 17, width: cw - pad * 2, height: 13)
+        authorAv.frame = NSRect(x: pad, y: y + 17, width: 16, height: 16)
+        authorF.frame = NSRect(x: pad + 20, y: y + 17, width: cw - pad * 2 - 20, height: 16)
         badgeF.frame = NSRect(x: pad, y: y + 32, width: min(150, cw - pad * 2 - 60), height: 14)
         stateF.frame = NSRect(x: cw - pad - 56, y: y, width: 56, height: 14)
     }
@@ -193,7 +251,7 @@ final class StoreDetailView: NSView {
     let pageF = UI.label("", size: 10, color: StorePalette.muted, align: .center)
     let thumbs = NSView()
     let nameF = UI.label("", size: 17, weight: .semibold)
-    let avatar = UI.label("O", size: 13, weight: .bold, color: .white, align: .center)
+    let avatar = NSButton()
     let authorName = UI.label("", size: 12, weight: .semibold)
     let authorF = UI.label("", size: 11, color: StorePalette.muted)
     let statBox = NSView()
@@ -213,6 +271,9 @@ final class StoreDetailView: NSView {
 
     /// 同分类推荐点击回调（由 StoreView 注入，复用其 select(_:)）。
     var onPickRelated: ((StoreTheme) -> Void)?
+    /// 作者头像 / 昵称点击回调（由 StoreView 注入，打开用户主页）。
+    var onAuthor: (() -> Void)?
+    private var authorKey = ""
     private var relatedThemes: [StoreTheme] = []
     private var relatedBtns: [NSButton] = []
     private var previews: [String] = []
@@ -227,9 +288,11 @@ final class StoreDetailView: NSView {
         layer?.backgroundColor = StorePalette.surface.cgColor
         descF.lineBreakMode = .byWordWrapping
         descF.maximumNumberOfLines = 4
-        avatar.wantsLayer = true
-        avatar.layer?.cornerRadius = 15
-        avatar.layer?.backgroundColor = StorePalette.accent.cgColor
+        styleAvatarButton(avatar, size: 30)
+        avatar.target = self
+        avatar.action = #selector(authorClicked)
+        authorName.addGestureRecognizer(NSClickGestureRecognizer(target: self,
+                                                                 action: #selector(authorClicked)))
         statBox.wantsLayer = true
         statBox.layer?.backgroundColor = StorePalette.surface2.cgColor
         statBox.layer?.cornerRadius = 9
@@ -367,6 +430,7 @@ final class StoreDetailView: NSView {
         guard let idx = relatedBtns.firstIndex(of: sender), idx < relatedThemes.count else { return }
         onPickRelated?(relatedThemes[idx])
     }
+    @objc private func authorClicked() { onAuthor?() }
 
     @objc private func toggleDesc() {
         descExpanded.toggle()
@@ -378,7 +442,8 @@ final class StoreDetailView: NSView {
     private func refresh() {
         guard let t = theme else {
             nameF.stringValue = ""; authorF.stringValue = ""; authorName.stringValue = ""
-            tagsF.stringValue = ""; avatar.stringValue = "O"
+            tagsF.stringValue = ""; setAvatarButton(avatar, name: "?", path: nil, size: 30)
+            authorKey = ""
             descF.stringValue = "从左侧选择一个主题查看详情。"
             downloadBtn.title = "下载主题"; hint.stringValue = ""
             mainThumb.image = nil; downloadBtn.isEnabled = false; applyBtn.isEnabled = false
@@ -389,11 +454,9 @@ final class StoreDetailView: NSView {
         let author = t.author.isEmpty ? "匿名" : t.author
         authorName.stringValue = "by \(author)"
         authorF.stringValue = t.updated.map { "更新于 \($0)" } ?? ""
-        avatar.stringValue = String(author.prefix(1)).uppercased()
-        let colors: [NSColor] = [.systemBlue, .systemTeal, .systemPurple, .systemOrange, .systemPink]
-        var hv: UInt32 = 0
-        for c in author.unicodeScalars { hv = hv &* 31 &+ c.value }
-        avatar.layer?.backgroundColor = colors[Int(hv % UInt32(colors.count))].cgColor
+        authorKey = t.authorLogin ?? (t.author.isEmpty ? "" : t.author)
+        avatar.isHidden = authorKey.isEmpty
+        setAvatarButton(avatar, name: author, path: t.authorAvatar, size: 30)
         let cat = "类型：" + t.categoryDisplay
         tagsF.stringValue = t.tags.isEmpty ? cat : cat + "   #" + t.tags.joined(separator: "  #")
         descF.stringValue = t.description
@@ -479,6 +542,8 @@ final class StoreView: NSView {
     let addrField = UI.field("主题商店服务器地址（留空使用内置示例）")
     let refreshBtn = UI.button("刷新", height: 26)
     let uploadBtn = UI.button("上传主题…", height: 26)
+    let userAvatarBtn = NSButton()
+    let userNameBtn = UI.button("登录 / 注册", height: 26)
     let listScroll = NSScrollView()
     let grid = StoreGridContainer()
     let detail = StoreDetailView()
@@ -509,9 +574,14 @@ final class StoreView: NSView {
         if let u = StoreClient.baseURL { addrField.stringValue = u.absoluteString }
         searchF.target = self
         searchF.action = #selector(searchChanged)
-        for v in [titleF, subF, addrField, refreshBtn, uploadBtn, searchF,
+        styleAvatarButton(userAvatarBtn, size: 26)
+        userAvatarBtn.target = self
+        userAvatarBtn.action = #selector(openOwnProfile)
+        for v in [titleF, subF, addrField, refreshBtn, uploadBtn,
+                  userAvatarBtn, userNameBtn, searchF,
                   listScroll, detail, status, spinner] as [NSView] { addSubview(v) }
         buildPills()
+        updateUserUI()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
 
@@ -584,6 +654,10 @@ final class StoreView: NSView {
             tile.configure(t, image: downloaded[t.id]?.backgroundImage,
                            downloaded: downloaded[t.id] != nil)
             tile.onSelect = { [weak self] in self?.select(t) }
+            tile.onAuthor = { [weak self] in
+                let key = t.authorLogin ?? t.author
+                if !key.isEmpty { self?.openProfile(key) }
+            }
             return tile
         }
         let gridW = grid.frame.width > 20 ? grid.frame.width : 340
@@ -625,6 +699,8 @@ final class StoreView: NSView {
         load()
     }
 
+    func selectTheme(_ t: StoreTheme) { select(t) }
+
     private func select(_ t: StoreTheme) {
         selected = t
         detail.theme = t
@@ -637,6 +713,10 @@ final class StoreView: NSView {
         let same = themes.filter { $0.id != t.id && $0.categoryKind == t.categoryKind }.prefix(6)
         detail.setRelated(Array(same))
         detail.onPickRelated = { [weak self] picked in self?.select(picked) }
+        detail.onAuthor = { [weak self] in
+            let key = t.authorLogin ?? t.author
+            if !key.isEmpty { self?.openProfile(key) }
+        }
     }
 
     @objc func downloadSelected() {
@@ -712,6 +792,32 @@ final class StoreView: NSView {
 
     @objc func openUpload() { controller?.openUpload(from: self) }
 
+    // MARK: 账号入口
+
+    @objc func openAccount() { controller?.openAccount() }
+
+    @objc func openOwnProfile() {
+        guard let u = StoreClient.currentUser, !u.loginName.isEmpty else {
+            openAccount()
+            return
+        }
+        openProfile(u.loginName)
+    }
+
+    func openProfile(_ login: String) { controller?.openProfile(login: login) }
+
+    /// 登录态变化后刷新顶栏头像/昵称，并重绘卡片上的作者头像。
+    func updateUserUI() {
+        if let u = StoreClient.currentUser, !u.displayName.isEmpty {
+            userNameBtn.title = u.displayName + (u.isAdmin == true ? "（管理员）" : "")
+            setAvatarButton(userAvatarBtn, name: u.displayName, path: u.avatar, size: 26)
+        } else {
+            userNameBtn.title = "登录 / 注册"
+            setAvatarButton(userAvatarBtn, name: "?", path: nil, size: 26)
+        }
+        renderGrid()
+    }
+
     private func setBusy(_ on: Bool, _ text: String? = nil) {
         busy = on
         status.stringValue = text ?? (on ? "处理中…" : "就绪")
@@ -725,12 +831,14 @@ final class StoreView: NSView {
         super.layout()
         let pad: CGFloat = 16
         titleF.frame = NSRect(x: pad, y: 10, width: 200, height: 22)
-        subF.frame = NSRect(x: pad + 130, y: 13, width: bounds.width - pad * 2 - 230, height: 16)
+        subF.frame = NSRect(x: pad + 130, y: 13, width: bounds.width - pad * 2 - 360, height: 16)
         let toolbarY: CGFloat = 38
         let tfW: CGFloat = bounds.width - pad * 2 - 200
         addrField.frame = NSRect(x: pad, y: toolbarY, width: max(160, tfW), height: 26)
         refreshBtn.frame = NSRect(x: bounds.width - pad - 188, y: toolbarY, width: 90, height: 26)
         uploadBtn.frame = NSRect(x: bounds.width - pad - 90, y: toolbarY, width: 90, height: 26)
+        userAvatarBtn.frame = NSRect(x: bounds.width - pad - 172, y: 8, width: 26, height: 26)
+        userNameBtn.frame = NSRect(x: bounds.width - pad - 140, y: 8, width: 140, height: 26)
         let searchY = toolbarY + 32
         searchF.frame = NSRect(x: pad, y: searchY, width: 240, height: 26)
         let pillY = searchY + 34
@@ -758,6 +866,9 @@ final class StoreView: NSView {
 final class StoreWindowController: NSWindowController {
     private var view: StoreView { window!.contentView as! StoreView }
     private var upload: StoreUploadWindowController?
+    private var account: StoreAccountWindowController?
+    private var profileEdit: StoreProfileEditWindowController?
+    private var userProfile: StoreUserProfileWindowController?
     private var configured = false
 
     convenience init() {
@@ -783,16 +894,63 @@ final class StoreWindowController: NSWindowController {
         v.controller = self
         v.refreshBtn.target = v; v.refreshBtn.action = #selector(StoreView.refresh)
         v.uploadBtn.target = v; v.uploadBtn.action = #selector(StoreView.openUpload)
+        v.userNameBtn.target = v; v.userNameBtn.action = #selector(StoreView.openAccount)
         v.onApplyTheme = { [weak self] theme in
             self?.applyTheme(theme)
         }
         v.refreshCategories()
         v.load()
+        if !StoreClient.userToken.isEmpty {
+            StoreClient.session { [weak self] _ in
+                DispatchQueue.main.async { self?.view.updateUserUI() }
+            }
+        }
     }
 
     override func windowDidLoad() {
         super.windowDidLoad()
         configure()
+    }
+
+    // MARK: 账号 / 用户主页窗口
+
+    func openAccount() {
+        let a = StoreAccountWindowController()
+        a.onDone = { [weak self] in
+            self?.view.updateUserUI()
+            self?.account = nil
+        }
+        account = a
+        a.showWindow(nil)
+    }
+
+    func openProfile(login: String) {
+        guard !login.isEmpty else { return }
+        let p = StoreUserProfileWindowController(login: login)
+        p.onPickTheme = { [weak self] t in
+            guard let self = self else { return }
+            self.window?.makeKeyAndOrderFront(nil)
+            self.view.selectTheme(t)
+            p.window?.orderOut(nil)
+            self.userProfile = nil
+        }
+        p.onEdit = { [weak self] in
+            p.window?.orderOut(nil)
+            self?.userProfile = nil
+            self?.openProfileEdit()
+        }
+        userProfile = p
+        p.showWindow(nil)
+    }
+
+    func openProfileEdit() {
+        let e = StoreProfileEditWindowController()
+        e.onDone = { [weak self] in
+            self?.view.updateUserUI()
+            self?.profileEdit = nil
+        }
+        profileEdit = e
+        e.showWindow(nil)
     }
 
     func applyTheme(_ theme: Theme) {

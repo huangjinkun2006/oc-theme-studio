@@ -38,6 +38,8 @@ struct StoreTheme: Codable, Identifiable {
     let id: String
     let name: String
     let author: String
+    let authorLogin: String?     // 注册用户名，用于跳转个人主页
+    let authorAvatar: String?    // 头像 URL（未上传时服务端返回 SVG，App 回退首字母）
     let description: String
     let version: String?
     let tags: [String]
@@ -68,6 +70,43 @@ struct StoreTheme: Codable, Identifiable {
         guard localDemo, let t = thumbnail else { return nil }
         return String(t.dropFirst("preset://".count))
     }
+}
+
+/// 商店登录用户（公开字段，不含密码）。服务端同时用于会话恢复与资料编辑返回。
+struct StoreUser: Codable {
+    let valid: Bool?
+    let user: String?
+    let login: String?
+    let nick: String?
+    let avatar: String?
+    let bio: String?
+    let isAdmin: Bool?
+    let token: String?
+    var displayName: String { nick ?? user ?? login ?? "" }
+    var loginName: String { login ?? "" }
+}
+
+struct StoreComment: Codable {
+    let id: String?
+    let user: String?
+    let login: String?
+    let avatar: String?
+    let text: String?
+    let time: String?
+    let ts: Int?
+}
+
+struct StoreProfile: Codable {
+    let login: String?
+    let nick: String?
+    let avatar: String?
+    let bio: String?
+    let created: String?
+    let themeCount: Int?
+    let commentCount: Int?
+    let downloadCount: Int?
+    let themes: [StoreTheme]?
+    let comments: [StoreComment]?
 }
 
 enum StoreDownloadResult {
@@ -163,7 +202,10 @@ final class StoreClient {
               let author = d["author"] as? String,
               let desc = d["description"] as? String else { return nil }
         return StoreTheme(
-            id: id, name: name, author: author, description: desc,
+            id: id, name: name, author: author,
+            authorLogin: d["authorLogin"] as? String,
+            authorAvatar: d["authorAvatar"] as? String,
+            description: desc,
             version: d["version"] as? String,
             tags: d["tags"] as? [String] ?? [],
             category: d["category"] as? String,
@@ -297,6 +339,7 @@ final class StoreClient {
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 120
+        if !userToken.isEmpty { req.setValue(userToken, forHTTPHeaderField: "X-User-Token") }
 
         let boundary = "OCThemeStudioFormBoundary\(UUID().uuidString)"
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -346,5 +389,229 @@ final class StoreClient {
             }
             completion(.success(t))
         }.resume()
+    }
+}
+
+// MARK: - 账号 / 个人资料 / 用户主页
+//
+// 登录 token 只保存在本机 UserDefaults（不含密码），与网页端 localStorage 对应。
+// 所有接口均失败即回 error，UI 负责提示；回调不保证在主线程，调用方需自行切回主线程。
+extension StoreClient {
+
+    private static let tokenKey = "OCStoreUserToken"
+    private static let userKey = "OCStoreUserData"
+
+    static var userToken: String {
+        get { UserDefaults.standard.string(forKey: tokenKey) ?? "" }
+        set {
+            if newValue.isEmpty { UserDefaults.standard.removeObject(forKey: tokenKey) }
+            else { UserDefaults.standard.set(newValue, forKey: tokenKey) }
+        }
+    }
+
+    static var currentUser: StoreUser? {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: userKey),
+                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { return nil }
+            return decodeUser(obj)
+        }
+        set {
+            guard let u = newValue, let data = try? JSONEncoder().encode(u) else {
+                UserDefaults.standard.removeObject(forKey: userKey)
+                return
+            }
+            UserDefaults.standard.set(data, forKey: userKey)
+        }
+    }
+
+    private static func decodeUser(_ d: [String: Any]) -> StoreUser {
+        StoreUser(valid: d["valid"] as? Bool,
+                  user: d["user"] as? String,
+                  login: d["login"] as? String,
+                  nick: d["nick"] as? String,
+                  avatar: d["avatar"] as? String,
+                  bio: d["bio"] as? String,
+                  isAdmin: d["isAdmin"] as? Bool,
+                  token: d["token"] as? String)
+    }
+
+    private static func decodeComment(_ d: [String: Any]) -> StoreComment {
+        StoreComment(id: d["id"] as? String, user: d["user"] as? String,
+                     login: d["login"] as? String, avatar: d["avatar"] as? String,
+                     text: d["text"] as? String, time: d["time"] as? String,
+                     ts: d["ts"] as? Int)
+    }
+
+    private static func decodeProfile(_ d: [String: Any]) -> StoreProfile {
+        StoreProfile(login: d["login"] as? String, nick: d["nick"] as? String,
+                     avatar: d["avatar"] as? String, bio: d["bio"] as? String,
+                     created: d["created"] as? String,
+                     themeCount: d["themeCount"] as? Int,
+                     commentCount: d["commentCount"] as? Int,
+                     downloadCount: d["downloadCount"] as? Int,
+                     themes: (d["themes"] as? [[String: Any]])?.compactMap { decode($0) } ?? [],
+                     comments: (d["comments"] as? [[String: Any]])?.map { decodeComment($0) } ?? [])
+    }
+
+    private static func requestJSON(_ path: String, method: String = "POST",
+                                    body: [String: Any]? = nil, authorized: Bool = false,
+                                    completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        guard let base = baseURL else {
+            completion(.failure(StoreError.message("未配置主题商店服务器地址")))
+            return
+        }
+        var req = URLRequest(url: base.appendingPathComponent(path))
+        req.httpMethod = method
+        req.timeoutInterval = 30
+        if let body = body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        if authorized && !userToken.isEmpty {
+            req.setValue(userToken, forHTTPHeaderField: "X-User-Token")
+        }
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            if let err = err { completion(.failure(err)); return }
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let obj = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                       as? [String: Any]) ?? [:]
+            guard (200..<300).contains(status) else {
+                let detail = obj["detail"] as? String ?? "HTTP \(status)"
+                completion(.failure(StoreError.message(detail)))
+                return
+            }
+            completion(.success(obj))
+        }.resume()
+    }
+
+    static func login(username: String, password: String,
+                      completion: @escaping (Result<StoreUser, Error>) -> Void) {
+        requestJSON("api/users/login", body: ["username": username, "password": password]) { r in
+            switch r {
+            case .success(let d):
+                let u = decodeUser(d)
+                userToken = u.token ?? ""
+                currentUser = u
+                completion(.success(u))
+            case .failure(let e): completion(.failure(e))
+            }
+        }
+    }
+
+    static func register(username: String, password: String, nickname: String,
+                         completion: @escaping (Result<StoreUser, Error>) -> Void) {
+        requestJSON("api/users/register",
+                    body: ["username": username, "password": password, "nickname": nickname]) { r in
+            switch r {
+            case .success(let d):
+                let u = decodeUser(d)
+                userToken = u.token ?? ""
+                currentUser = u
+                completion(.success(u))
+            case .failure(let e): completion(.failure(e))
+            }
+        }
+    }
+
+    static func session(completion: @escaping (Result<StoreUser, Error>) -> Void) {
+        guard !userToken.isEmpty else {
+            completion(.failure(StoreError.message("尚未登录")))
+            return
+        }
+        requestJSON("api/users/session", method: "GET", authorized: true) { r in
+            switch r {
+            case .success(let d):
+                let u = decodeUser(d)
+                if u.valid == true { currentUser = u; completion(.success(u)) }
+                else { userToken = ""; currentUser = nil
+                    completion(.failure(StoreError.message("登录已过期，请重新登录"))) }
+            case .failure(let e): completion(.failure(e))
+            }
+        }
+    }
+
+    static func logout() {
+        requestJSON("api/users/logout", authorized: true) { _ in }
+        userToken = ""
+        currentUser = nil
+    }
+
+    static func updateProfile(login: String, nick: String, bio: String,
+                              oldPassword: String = "", newPassword: String = "",
+                              completion: @escaping (Result<StoreUser, Error>) -> Void) {
+        var body: [String: Any] = ["login": login, "nick": nick, "bio": bio]
+        if !newPassword.isEmpty {
+            body["oldPassword"] = oldPassword
+            body["newPassword"] = newPassword
+        }
+        requestJSON("api/users/me/profile", body: body, authorized: true) { r in
+            switch r {
+            case .success(let d):
+                let u = decodeUser(d)
+                currentUser = u
+                completion(.success(u))
+            case .failure(let e): completion(.failure(e))
+            }
+        }
+    }
+
+    static func uploadAvatar(fileURL: URL,
+                             completion: @escaping (Result<StoreUser, Error>) -> Void) {
+        guard let base = baseURL, !userToken.isEmpty,
+              let data = try? Data(contentsOf: fileURL) else {
+            completion(.failure(StoreError.message("头像文件不可读或未登录")))
+            return
+        }
+        let ext = fileURL.pathExtension.lowercased()
+        let mime = ["png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "gif": "image/gif", "webp": "image/webp"][ext] ?? "application/octet-stream"
+        var req = URLRequest(url: base.appendingPathComponent("api/users/me/avatar"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue(userToken, forHTTPHeaderField: "X-User-Token")
+        let boundary = "OCStoreAvatarBoundary\(UUID().uuidString)"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"avatar.\(ext)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            if let err = err { completion(.failure(err)); return }
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let obj = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                       as? [String: Any]) ?? [:]
+            guard (200..<300).contains(status) else {
+                completion(.failure(StoreError.message(obj["detail"] as? String ?? "HTTP \(status)")))
+                return
+            }
+            let u = decodeUser(obj); currentUser = u
+            completion(.success(u))
+        }.resume()
+    }
+
+    static func deleteAvatar(completion: @escaping (Result<StoreUser, Error>) -> Void) {
+        requestJSON("api/users/me/avatar", method: "DELETE", authorized: true) { r in
+            switch r {
+            case .success(let d):
+                let u = decodeUser(d); currentUser = u
+                completion(.success(u))
+            case .failure(let e): completion(.failure(e))
+            }
+        }
+    }
+
+    static func profile(login: String,
+                        completion: @escaping (Result<StoreProfile, Error>) -> Void) {
+        let encoded = login.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? login
+        requestJSON("api/users/\(encoded)/profile", method: "GET") { r in
+            switch r {
+            case .success(let d): completion(.success(decodeProfile(d)))
+            case .failure(let e): completion(.failure(e))
+            }
+        }
     }
 }
