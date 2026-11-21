@@ -34,6 +34,13 @@ enum StoreCategory: String {
     static let uploadable: [StoreCategory] = [.theme, .icons, .background, .fonts, .efi]
 }
 
+struct StoreThemeVersion: Codable {
+    let version: String?
+    let sizeText: String?
+    let uploaded: String?
+    let notes: String?
+}
+
 struct StoreTheme: Codable, Identifiable {
     let id: String
     let name: String
@@ -53,6 +60,9 @@ struct StoreTheme: Codable, Identifiable {
     let commentCount: Int?       // 评论数（详情页统计条）
     let previews: [String]?      // 详情页多预览图 URL（封面排最前）
     let cover: String?           // 自定义封面文件名（服务端 meta.cover）
+    let versions: [StoreThemeVersion]? // 版本历史（最新在前，仅详情接口返回）
+    let latestVersion: String?
+    let versionCount: Int?
 
     /// 多预览图 URL（远程 /files/... 拼基址；preset:// 用内置背景）。
     var previewPaths: [String] {
@@ -217,7 +227,15 @@ final class StoreClient {
             downloads: d["downloads"] as? Int,
             commentCount: d["commentCount"] as? Int,
             previews: d["previews"] as? [String],
-            cover: d["cover"] as? String)
+            cover: d["cover"] as? String,
+            versions: (d["versions"] as? [[String: Any]])?.compactMap {
+                StoreThemeVersion(version: $0["version"] as? String,
+                                  sizeText: $0["sizeText"] as? String,
+                                  uploaded: $0["uploaded"] as? String,
+                                  notes: $0["notes"] as? String)
+            },
+            latestVersion: d["latestVersion"] as? String,
+            versionCount: d["versionCount"] as? Int)
     }
 
     // MARK: Thumbnails
@@ -282,7 +300,7 @@ final class StoreClient {
 
     // MARK: Download
 
-    static func download(_ theme: StoreTheme,
+    static func download(_ theme: StoreTheme, version: String? = nil,
                          completion: @escaping (Result<StoreDownloadResult, Error>) -> Void) {
         if let pid = theme.presetId {
             completion(.success(.local(presetId: pid)))
@@ -293,7 +311,13 @@ final class StoreClient {
             completion(.failure(StoreError.message("该主题没有可用的下载地址（离线示例请使用 preset 主题）。")))
             return
         }
-        let task = URLSession.shared.downloadTask(with: url) { fileURL, resp, err in
+        var target = url
+        if let version = version, !version.isEmpty {
+            var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            comps?.queryItems = [URLQueryItem(name: "version", value: version)]
+            target = comps?.url ?? url
+        }
+        let task = URLSession.shared.downloadTask(with: target) { fileURL, resp, err in
             if let err = err {
                 completion(.failure(StoreError.message("下载失败：\(err.localizedDescription)")))
                 return
@@ -302,7 +326,12 @@ final class StoreClient {
                 completion(.failure(StoreError.message("下载失败：未返回文件")))
                 return
             }
-            let dest = Paths.scratch.appendingPathComponent("store_\(theme.id).zip")
+            let safeVer = (version ?? "").unicodeScalars.map { c in
+                (CharacterSet.alphanumerics.contains(c) || c.value == 46 || c.value == 45)
+                    ? Character(c) : "_"
+            }.map(String.init).joined()
+            let dest = Paths.scratch.appendingPathComponent(
+                "store_\(theme.id)\(safeVer.isEmpty ? "" : "_" + safeVer).zip")
             try? FileManager.default.createDirectory(at: Paths.scratch,
                                                     withIntermediateDirectories: true)
             try? FileManager.default.removeItem(at: dest)
@@ -590,6 +619,49 @@ extension StoreClient {
             }
             let u = decodeUser(obj); currentUser = u
             completion(.success(u))
+        }.resume()
+    }
+
+    /// 给已有主题上传新版本：仅作者本人 / 管理员可用，返回带最新 versions 的主题。
+    static func uploadVersion(tid: String, version: String, notes: String,
+                              fileURL: URL,
+                              completion: @escaping (Result<StoreTheme, Error>) -> Void) {
+        guard let base = baseURL, !userToken.isEmpty,
+              let data = try? Data(contentsOf: fileURL) else {
+            completion(.failure(StoreError.message("版本包不可读或未登录")))
+            return
+        }
+        var req = URLRequest(url: base.appendingPathComponent("api/themes/\(tid)/versions"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 180
+        req.setValue(userToken, forHTTPHeaderField: "X-User-Token")
+        let boundary = "OCStoreVersionBoundary\(UUID().uuidString)"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        func field(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+        field("version", version)
+        field("notes", notes)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"package\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/zip\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            if let err = err { completion(.failure(err)); return }
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let obj = (data.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                       as? [String: Any]) ?? [:]
+            guard (200..<300).contains(status), let t = decode(obj) else {
+                completion(.failure(StoreError.message(
+                    obj["detail"] as? String ?? "上传失败 HTTP \(status)")))
+                return
+            }
+            completion(.success(t))
         }.resume()
     }
 

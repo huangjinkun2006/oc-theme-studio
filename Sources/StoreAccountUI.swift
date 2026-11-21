@@ -483,3 +483,111 @@ final class StoreUserProfileWindowController: NSWindowController {
         }
     }
 }
+
+// MARK: 上传主题新版本
+
+private final class StoreVersionUploadView: NSView {
+    let infoF = UI.label("", size: 11, color: StorePalette.muted)
+    let versionF = UI.field("版本号，如 1.1")
+    let notesF = UI.field("更新说明（可选）")
+    let pickBtn = UI.button("选择 .zip…", height: 26)
+    let fileF = UI.label("未选择文件", size: 11, color: StorePalette.muted)
+    let msg = UI.label("", size: 11, color: .systemRed)
+    let cancelBtn = UI.button("取消", height: 28)
+    let uploadBtn = UI.button("上传新版本", height: 28, accent: true)
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        for v in [infoF, versionF, notesF, pickBtn, fileF, msg, cancelBtn, uploadBtn] as [NSView] {
+            addSubview(v)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
+
+    override func layout() {
+        super.layout()
+        let pad: CGFloat = 18
+        let w = bounds.width - pad * 2
+        infoF.frame = NSRect(x: pad, y: 14, width: w, height: 18)
+        versionF.frame = NSRect(x: pad, y: 42, width: w, height: 24)
+        notesF.frame = NSRect(x: pad, y: 74, width: w, height: 24)
+        pickBtn.frame = NSRect(x: pad, y: 108, width: 110, height: 26)
+        fileF.frame = NSRect(x: pad + 118, y: 113, width: w - 118, height: 18)
+        msg.frame = NSRect(x: pad, y: 140, width: w, height: 30)
+        let bw = (w - 10) / 2
+        cancelBtn.frame = NSRect(x: pad, y: bounds.height - 44, width: bw, height: 28)
+        uploadBtn.frame = NSRect(x: pad + bw + 10, y: bounds.height - 44, width: bw, height: 28)
+    }
+}
+
+final class StoreVersionUploadWindowController: NSWindowController {
+    private let v = StoreVersionUploadView()
+    private let theme: StoreTheme
+    private var fileURL: URL?
+    private var busy = false
+    var onDone: ((StoreTheme) -> Void)?
+
+    init(theme: StoreTheme) {
+        self.theme = theme
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 260),
+                         styleMask: [.titled, .closable, .miniaturizable],
+                         backing: .buffered, defer: false)
+        w.title = "上传新版本"
+        w.center()
+        w.contentView = v
+        super.init(window: w)
+        v.infoF.stringValue = "「\(theme.name)」当前最新版本 v\(theme.latestVersion ?? theme.version ?? "—")"
+        v.versionF.stringValue = ""
+        v.pickBtn.target = self
+        v.pickBtn.action = #selector(pickFile)
+        v.cancelBtn.target = self
+        v.cancelBtn.action = #selector(cancel)
+        v.uploadBtn.target = self
+        v.uploadBtn.action = #selector(upload)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) unsupported") }
+
+    @objc private func cancel() { window?.orderOut(nil) }
+
+    @objc private func pickFile() {
+        guard let win = window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["zip"]
+        panel.message = "选择新版本的主题包 .zip"
+        panel.beginSheetModal(for: win) { [weak self] resp in
+            guard let self = self, resp == .OK, let url = panel.url else { return }
+            self.fileURL = url
+            self.v.fileF.stringValue = url.lastPathComponent
+            self.v.msg.stringValue = ""
+        }
+    }
+
+    @objc private func upload() {
+        guard !busy else { return }
+        let version = v.versionF.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !version.isEmpty else { v.msg.stringValue = "请填写版本号"; return }
+        guard let file = fileURL else { v.msg.stringValue = "请选择 .zip 文件"; return }
+        busy = true
+        v.uploadBtn.isEnabled = false
+        v.msg.stringValue = "正在上传…"
+        StoreClient.uploadVersion(tid: theme.id, version: version,
+                                  notes: v.notesF.stringValue.trimmingCharacters(in: .whitespaces),
+                                  fileURL: file) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.busy = false
+                self.v.uploadBtn.isEnabled = true
+                switch result {
+                case .success(let updated):
+                    self.window?.orderOut(nil)
+                    self.onDone?(updated)
+                case .failure(let err):
+                    self.v.msg.stringValue = err.localizedDescription
+                }
+            }
+        }
+    }
+}

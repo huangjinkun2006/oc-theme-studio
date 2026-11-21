@@ -262,6 +262,11 @@ final class StoreDetailView: NSView {
     let descMore = NSButton()
     let tagsHead = UI.label("标签", size: 10.5, weight: .semibold, color: StorePalette.muted)
     let tagsF = UI.label("", size: 11, color: StorePalette.accent)
+    let versionHead = UI.label("版本历史", size: 10.5, weight: .semibold, color: StorePalette.muted)
+    let versionUploadBtn = UI.button("上传新版本", height: 22)
+    let versionBox = NSView()
+    var versionBtns: [NSButton] = []
+    let versionMoreF = UI.label("", size: 10, color: StorePalette.muted, align: .right)
     let relatedHead = UI.label("同分类推荐", size: 10.5, weight: .semibold, color: StorePalette.muted)
     let related = NSView()
     let downloadBtn = UI.button("下载主题", height: 34, accent: true)
@@ -273,7 +278,11 @@ final class StoreDetailView: NSView {
     var onPickRelated: ((StoreTheme) -> Void)?
     /// 作者头像 / 昵称点击回调（由 StoreView 注入，打开用户主页）。
     var onAuthor: (() -> Void)?
+    /// 版本历史：下载指定版本 / 上传新版本（由 StoreView 注入）。
+    var onDownloadVersion: ((String) -> Void)?
+    var onUploadVersion: (() -> Void)?
     private var authorKey = ""
+    private var versionList: [StoreThemeVersion] = []
     private var relatedThemes: [StoreTheme] = []
     private var relatedBtns: [NSButton] = []
     private var previews: [String] = []
@@ -329,6 +338,26 @@ final class StoreDetailView: NSView {
             return b
         }
         relatedBtns.forEach { related.addSubview($0) }
+        versionBox.wantsLayer = true
+        versionBox.layer?.backgroundColor = StorePalette.surface2.cgColor
+        versionBox.layer?.cornerRadius = 7
+        versionBox.layer?.borderWidth = 1
+        versionBox.layer?.borderColor = StorePalette.line.cgColor
+        versionBtns = (0..<4).map { _ in
+            let b = NSButton(title: "", target: self, action: #selector(versionClicked(_:)))
+            b.bezelStyle = .rounded
+            b.font = .systemFont(ofSize: 9.5, weight: .medium)
+            b.contentTintColor = StorePalette.accent
+            b.isBordered = false
+            b.isHidden = true
+            return b
+        }
+        versionBtns.forEach { versionBox.addSubview($0) }
+        versionBox.addSubview(versionMoreF)
+        versionUploadBtn.font = .systemFont(ofSize: 10.5, weight: .semibold)
+        versionUploadBtn.target = self
+        versionUploadBtn.action = #selector(uploadVersionClicked)
+        versionUploadBtn.isHidden = true
         mainThumb.imageScaling = .scaleProportionallyUpOrDown
         mainThumb.wantsLayer = true
         mainThumb.layer?.cornerRadius = 10
@@ -366,6 +395,7 @@ final class StoreDetailView: NSView {
         for v in [header, stage, mainThumb, prevBtn, nextBtn, pageF, thumbs,
                   nameF, avatar, authorName, authorF, statBox,
                   descHead, descF, descMore, tagsHead, tagsF,
+                  versionHead, versionUploadBtn, versionBox,
                   relatedHead, related,
                   downloadBtn, applyBtn, busy, hint] as [NSView] {
             addSubview(v)
@@ -430,7 +460,38 @@ final class StoreDetailView: NSView {
         guard let idx = relatedBtns.firstIndex(of: sender), idx < relatedThemes.count else { return }
         onPickRelated?(relatedThemes[idx])
     }
+    private func renderVersions(_ t: StoreTheme) {
+        versionList = t.versions ?? []
+        let on = !versionList.isEmpty
+        versionHead.isHidden = !on
+        versionBox.isHidden = !on
+        for (i, b) in versionBtns.enumerated() {
+            let visible = i < versionList.count
+            b.isHidden = !visible
+            if visible {
+                let v = versionList[i]
+                let note = (v.notes?.isEmpty == false) ? (v.notes ?? "")
+                           : (i == 0 ? "当前版本" : "历史版本")
+                b.title = "v\(v.version ?? "") · \(note)"
+                b.tag = i
+            }
+        }
+        let extra = versionList.count - versionBtns.count
+        versionMoreF.isHidden = extra <= 0
+        versionMoreF.stringValue = extra > 0 ? "+\(extra)" : ""
+        let me = StoreClient.currentUser
+        let mine = (me?.loginName.lowercased() == authorKey.lowercased()
+                    && !authorKey.isEmpty) || me?.isAdmin == true
+        versionUploadBtn.isHidden = !mine
+    }
+
     @objc private func authorClicked() { onAuthor?() }
+    @objc private func versionClicked(_ sender: NSButton) {
+        guard sender.tag >= 0, sender.tag < versionList.count,
+              let v = versionList[sender.tag].version else { return }
+        onDownloadVersion?(v)
+    }
+    @objc private func uploadVersionClicked() { onUploadVersion?() }
 
     @objc private func toggleDesc() {
         descExpanded.toggle()
@@ -448,6 +509,10 @@ final class StoreDetailView: NSView {
             downloadBtn.title = "下载主题"; hint.stringValue = ""
             mainThumb.image = nil; downloadBtn.isEnabled = false; applyBtn.isEnabled = false
             previews = []; page = 0; renderPage(); renderStats(nil); setRelated([])
+            versionList = []
+            versionBtns.forEach { $0.isHidden = true }
+            versionHead.isHidden = true; versionBox.isHidden = true
+            versionUploadBtn.isHidden = true; versionMoreF.isHidden = true
             return
         }
         nameF.stringValue = t.name
@@ -459,6 +524,7 @@ final class StoreDetailView: NSView {
         setAvatarButton(avatar, name: author, path: t.authorAvatar, size: 30)
         let cat = "类型：" + t.categoryDisplay
         tagsF.stringValue = t.tags.isEmpty ? cat : cat + "   #" + t.tags.joined(separator: "  #")
+        renderVersions(t)
         descF.stringValue = t.description
         descExpanded = false
         descF.maximumNumberOfLines = 4
@@ -466,7 +532,8 @@ final class StoreDetailView: NSView {
         descMore.isHidden = t.description.count <= 70
         renderStats(t)
         let isEFI = t.categoryKind == .efi
-        downloadBtn.title = isEFI ? "下载并安装…" : "下载主题"
+        let baseLabel = isEFI ? "下载并安装…" : "下载主题"
+        downloadBtn.title = t.latestVersion.map { "\(baseLabel) · v\($0)" } ?? baseLabel
         hint.stringValue = isEFI
             ? "下载后按主窗口所选 EFI 分区安装，写入前自动备份 Resources 与 config.plist。"
             : ""
@@ -513,14 +580,25 @@ final class StoreDetailView: NSView {
 
         descHead.frame = NSRect(x: pad, y: y, width: w, height: 14); y += 16
         let descH: CGFloat = descExpanded
-            ? min(150, max(40, bounds.height - y - 150))
-            : min(72, max(34, bounds.height - y - 150))
+            ? min(150, max(40, bounds.height - y - 190))
+            : min(72, max(34, bounds.height - y - 190))
         descF.frame = NSRect(x: pad, y: y, width: w, height: descH)
         y += descH + 2
         descMore.frame = NSRect(x: pad, y: y, width: 80, height: 18); y += 22
 
         tagsHead.frame = NSRect(x: pad, y: y, width: w, height: 14); y += 16
         tagsF.frame = NSRect(x: pad, y: y, width: w, height: 16); y += 20
+
+        versionHead.frame = NSRect(x: pad, y: y, width: w - 110, height: 14)
+        versionUploadBtn.frame = NSRect(x: pad + w - 100, y: y - 4, width: 100, height: 22)
+        y += 18
+        versionBox.frame = NSRect(x: pad, y: y, width: w, height: 28)
+        let vw = max(30, (w - 66) / CGFloat(max(1, versionBtns.count)))
+        for (i, b) in versionBtns.enumerated() {
+            b.frame = NSRect(x: 4 + CGFloat(i) * (vw + 4), y: 3, width: vw, height: 22)
+        }
+        versionMoreF.frame = NSRect(x: w - 58, y: 7, width: 54, height: 16)
+        y += 34
 
         relatedHead.frame = NSRect(x: pad, y: y, width: w, height: 14); y += 16
         related.frame = NSRect(x: pad, y: y, width: w, height: 34)
@@ -717,6 +795,8 @@ final class StoreView: NSView {
             let key = t.authorLogin ?? t.author
             if !key.isEmpty { self?.openProfile(key) }
         }
+        detail.onDownloadVersion = { [weak self] v in self?.downloadVersion(t, version: v) }
+        detail.onUploadVersion = { [weak self] in self?.openVersionUpload(t) }
     }
 
     @objc func downloadSelected() {
@@ -738,6 +818,25 @@ final class StoreView: NSView {
             }
         }
     }
+
+    /// 下载指定历史版本，后续导入流程与默认下载完全一致。
+    private func downloadVersion(_ t: StoreTheme, version: String) {
+        setBusy(true, "正在下载「\(t.name)」v\(version)…")
+        detail.downloadBtn.isEnabled = false
+        StoreClient.download(t, version: version) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.setBusy(false)
+                self.detail.downloadBtn.isEnabled = true
+                switch result {
+                case .success(let r): self.finishDownload(t, result: r)
+                case .failure(let err): self.status.stringValue = "下载失败：\(err.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func openVersionUpload(_ t: StoreTheme) { controller?.openVersionUpload(t) }
 
     private func finishDownload(_ t: StoreTheme, result: StoreDownloadResult) {
         // EFI 配置包不进主题库：直接交给主窗口，按用户所选的 EFI 分区安装。
@@ -816,6 +915,17 @@ final class StoreView: NSView {
             setAvatarButton(userAvatarBtn, name: "?", path: nil, size: 26)
         }
         renderGrid()
+        if let t = selected { detail.theme = t }   // 刷新版本区上传入口的可见性
+    }
+
+    func applyVersionUpdate(_ t: StoreTheme) {
+        if let i = themes.firstIndex(where: { $0.id == t.id }) { themes[i] = t }
+        if selected?.id == t.id {
+            selected = t
+            detail.theme = t
+        }
+        renderGrid()
+        status.stringValue = "已上传新版本 v\(t.latestVersion ?? "")"
     }
 
     private func setBusy(_ on: Bool, _ text: String? = nil) {
@@ -869,6 +979,7 @@ final class StoreWindowController: NSWindowController {
     private var account: StoreAccountWindowController?
     private var profileEdit: StoreProfileEditWindowController?
     private var userProfile: StoreUserProfileWindowController?
+    private var versionUpload: StoreVersionUploadWindowController?
     private var configured = false
 
     convenience init() {
@@ -951,6 +1062,16 @@ final class StoreWindowController: NSWindowController {
         }
         profileEdit = e
         e.showWindow(nil)
+    }
+
+    func openVersionUpload(_ t: StoreTheme) {
+        let c = StoreVersionUploadWindowController(theme: t)
+        c.onDone = { [weak self] updated in
+            self?.view.applyVersionUpdate(updated)
+            self?.versionUpload = nil
+        }
+        versionUpload = c
+        c.showWindow(nil)
     }
 
     func applyTheme(_ theme: Theme) {
