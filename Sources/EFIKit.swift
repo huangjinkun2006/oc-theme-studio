@@ -45,6 +45,12 @@ struct EFIInspect {
     var canopyInConfig = false
     var canopyDriverFile = false
     var imageVariantPresent = false
+    // Boot chime (UEFI -> Audio). audioSupport is the master switch: OpenCore
+    // never plays the chime when it is false, regardless of PlayChime.
+    var audioSupport = false
+    var playChime = ""
+    var audioDevice = ""
+    var audioPresent = false
 
     /// True when the graphical picker has everything it needs.
     var graphicalReady: Bool {
@@ -281,6 +287,11 @@ extension EFIInspect {
                 r.pickerMode = asString(boot["PickerMode"])
                 r.pickerVariant = asString(boot["PickerVariant"])
                 r.canopyInConfig = canopyEnabled(pl)
+                let audio = asDict(asDict(pl["UEFI"])["Audio"])
+                r.audioPresent = !audio.isEmpty
+                r.audioSupport = audio["AudioSupport"] as? Bool ?? false
+                r.playChime = asString(audio["PlayChime"])
+                r.audioDevice = asString(audio["AudioDevice"])
             } else {
                 r.configError = "config.plist 无法解析"
             }
@@ -793,6 +804,72 @@ enum EFIActions {
             return ActionResult(ok: true,
                                 message: "已把「\(theme.name)」写入 EFI/OC/Resources/Image/\(layout.relative)，"
                                     + "PickerVariant = \(layout.config)" + warning,
+                                backupId: backup.id,
+                                inspect: try? EFIInspect.inspect(mount: mp))
+        } catch {
+            return .fail(error.localizedDescription)
+        }
+    }
+
+    // MARK: Boot chime toggle (UEFI -> Audio)
+
+    /// Enable or disable the OpenCore boot chime. `AudioSupport` is the master
+    /// switch (OpenCore never plays when false); `PlayChime` selects the policy:
+    /// "Auto" follows the macOS "Play sound on startup" NVRAM flag, "Enable"
+    /// always plays. We keep the existing AudioDevice/Codec/OutMask untouched.
+    /// mode: "on" -> AudioSupport=true, PlayChime=Enable
+    ///       "auto" -> AudioSupport=true, PlayChime=Auto (follows system)
+    ///       "off" -> AudioSupport=false (PlayChime left as-is)
+    static func setBootChime(mode: String, device dev: String, mount: String) -> ActionResult {
+        guard ["on", "auto", "off"].contains(mode) else {
+            return .fail("无效的开机音效模式")
+        }
+        do {
+            let mp = try verify(device: dev, mount: mount)
+            let oc = URL(fileURLWithPath: mp).appendingPathComponent("EFI/OC", isDirectory: true)
+            let cfg = oc.appendingPathComponent("config.plist")
+            guard efiIsDir(oc), efiIsFile(cfg) else {
+                return .fail("该分区缺少 EFI/OC/config.plist")
+            }
+            guard let data = try? Data(contentsOf: cfg), var pl = plistRead(data) else {
+                return .fail("config.plist 无法解析，已中止")
+            }
+            var uefi = asDict(pl["UEFI"])
+            var audio = asDict(uefi["Audio"])
+            let hadAudio = !audio.isEmpty
+            let devicePath = asString(audio["AudioDevice"])
+            if mode != "off" && devicePath.isEmpty && !hadAudio {
+                return .fail("config.plist 没有 UEFI → Audio 配置，且无法推断声卡路径；请先用能播放音效的 EFI 配置作为基础。")
+            }
+            if mode == "off" {
+                audio["AudioSupport"] = false
+            } else {
+                audio["AudioSupport"] = true
+                audio["PlayChime"] = (mode == "on") ? "Enable" : "Auto"
+                if audio["AudioOutMask"] == nil { audio["AudioOutMask"] = 1 }
+                if audio["AudioCodec"] == nil { audio["AudioCodec"] = 0 }
+            }
+            uefi["Audio"] = audio
+            pl["UEFI"] = uefi
+
+            let backup = try makeBackup(oc: oc, device: dev, mount: mp,
+                                        theme: "开机音效修改前快照",
+                                        suffix: "chime")
+
+            let stagedCfg = try PropertyListSerialization.data(fromPropertyList: pl,
+                                                               format: .xml, options: 0)
+            Paths.ensure()
+            let tmpCfg = Paths.scratch.appendingPathComponent("chime-config-\(UUID().uuidString).plist")
+            try stagedCfg.write(to: tmpCfg)
+            let done = runRoot(["cp " + shq(tmpCfg.path) + " " + shq(cfg.path)])
+            try? FileManager.default.removeItem(at: tmpCfg)
+            guard done.ok else {
+                return ActionResult(ok: false, message: done.message, backupId: backup.id)
+            }
+            let label = mode == "off" ? "已关闭开机音效" :
+                        (mode == "on" ? "已开启开机音效（每次启动必响）" : "已设为开机音效跟随系统设置")
+            return ActionResult(ok: true,
+                                message: label + "。已自动备份 config.plist，可一键恢复。",
                                 backupId: backup.id,
                                 inspect: try? EFIInspect.inspect(mount: mp))
         } catch {

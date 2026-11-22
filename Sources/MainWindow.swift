@@ -171,6 +171,12 @@ final class EFIColumnView: NSView {
     let ocSection = UI.section("OpenCore 状态")
     let ocInfo = UI.label("", size: 11.5)
 
+    let chimeSection = UI.section("开机音效（UEFI → Audio）")
+    let chimeState = UI.label("未选择 EFI 分区", size: 11)
+    let chimeOnBtn = UI.button("开启 · 每次响")
+    let chimeAutoBtn = UI.button("跟随系统")
+    let chimeOffBtn = UI.button("关闭")
+
     let optSection = UI.section("应用选项")
     let replaceChk = UI.checkbox("清空目标变体目录（保留其他主题）", on: true)
     let pickerChk = UI.checkbox("启用 OpenCanopy（PickerMode = External）", on: true)
@@ -196,6 +202,8 @@ final class EFIColumnView: NSView {
 
         ocInfo.lineBreakMode = .byWordWrapping
         ocInfo.maximumNumberOfLines = 8
+        chimeState.lineBreakMode = .byWordWrapping
+        chimeState.maximumNumberOfLines = 2
         applyHint.lineBreakMode = .byWordWrapping
         applyHint.maximumNumberOfLines = 3
 
@@ -211,6 +219,10 @@ final class EFIColumnView: NSView {
         d.add(UI.hLine(), height: 1)
         d.add(ocSection, height: 15)
         d.add(ocInfo, height: 152)
+        d.add(UI.hLine(), height: 1)
+        d.add(chimeSection, height: 15)
+        d.add(chimeState, height: 30)
+        d.add(ButtonRowN([chimeOnBtn, chimeAutoBtn, chimeOffBtn]), height: 28)
         d.add(UI.hLine(), height: 1)
         d.add(optSection, height: 15)
         d.add(replaceChk, height: 20)
@@ -451,7 +463,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
                          (e.finderBtn, #selector(openFinder)),
                          (e.loadCurrentBtn, #selector(loadCurrentTheme)),
                          (e.applyBtn, #selector(confirmApply)),
-                         (e.restoreBtn, #selector(confirmRestore))] as [(NSButton, Selector)] {
+                         (e.restoreBtn, #selector(confirmRestore)),
+                         (e.chimeOnBtn, #selector(setChimeOn)),
+                         (e.chimeAutoBtn, #selector(setChimeAuto)),
+                         (e.chimeOffBtn, #selector(setChimeOff))] as [(NSButton, Selector)] {
             b.target = self; b.action = sel
         }
 
@@ -1298,6 +1313,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         let e = root.efi
         guard let p = selectedPartition else {
             e.ocInfo.stringValue = "未选择 EFI 分区。\n点击「重新扫描」列出本机 EFI 分区。"
+            e.chimeState.stringValue = "未选择 EFI 分区"
             updateApplyButton()
             return
         }
@@ -1318,11 +1334,22 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
                         " · Label \(i.resources["Label"] ?? 0) · Audio \(i.resources["Audio"] ?? 0)",
                     "图形菜单：\(i.graphicalReady ? "配置就绪" : "配置不完整")",
                 ]
+                if i.audioPresent {
+                    let policy = i.audioSupport
+                        ? (i.playChime == "Enable" ? "每次启动必响"
+                           : (i.playChime == "Auto" ? "跟随系统设置" : "当前：\(i.playChime)"))
+                        : "关闭"
+                    e.chimeState.stringValue = "开机音效：\(policy) · 声卡 \(i.audioDevice.isEmpty ? "未配置" : i.audioDevice)"
+                } else {
+                    e.chimeState.stringValue = "开机音效：config.plist 无 UEFI → Audio 配置"
+                }
             } else {
                 lines.append("无法读取 OpenCore 配置")
+                e.chimeState.stringValue = "开机音效：config.plist 无法解析"
             }
         } else {
             lines.append("挂载后可查看 OpenCore 配置与当前主题。")
+            e.chimeState.stringValue = "开机音效：挂载 EFI 分区后可设置"
         }
         e.ocInfo.stringValue = lines.joined(separator: "\n")
         updateApplyButton()
@@ -1340,6 +1367,10 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
             b.isEnabled = !busy && controlShouldEnable(b)
         }
         e.restoreBtn.isEnabled = !busy && selectedBackup != nil
+        let chimeReady = !busy && selectedPartition?.mounted == true
+        e.chimeOnBtn.isEnabled = chimeReady
+        e.chimeAutoBtn.isEnabled = chimeReady
+        e.chimeOffBtn.isEnabled = chimeReady
         let l = root.library
         l.deleteBtn.isEnabled = !busy && selectedTheme != nil
         l.editBtn.isEnabled = !busy && selectedTheme != nil
@@ -1347,6 +1378,30 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
         l.newBtn.isEnabled = !busy
         l.importBtn.isEnabled = !busy
     }
+
+    // MARK: Boot chime toggle
+
+    private func applyChime(mode: String, label: String) {
+        guard let p = selectedPartition else { return }
+        confirm("设置开机音效", "将把 \(p.device) 的 config.plist 中 UEFI → Audio 改为「\(label)」。\n写入前会自动备份 config.plist，可在备份列表一键恢复。", ok: "写入") {
+            self.runBusy("正在设置开机音效…", {
+                EFIActions.setBootChime(mode: mode, device: p.device, mount: p.mountPoint)
+            }) { (r: ActionResult) in
+                if r.ok {
+                    self.notify("开机音效已更新", r.message)
+                    self.reloadBackups()
+                } else {
+                    self.notify("设置失败", r.message, critical: true)
+                }
+                self.refreshInspect()
+                self.root.statusBar.set(r.ok ? "开机音效：\(label)" : r.message, busy: false)
+            }
+        }
+    }
+
+    @objc private func setChimeOn() { applyChime(mode: "on", label: "开启 · 每次启动必响") }
+    @objc private func setChimeAuto() { applyChime(mode: "auto", label: "跟随系统设置") }
+    @objc private func setChimeOff() { applyChime(mode: "off", label: "关闭") }
 
     @objc private func mountEFI() {
         guard let p = selectedPartition else { return }
