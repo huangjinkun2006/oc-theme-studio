@@ -343,9 +343,12 @@ final class RootView: NSView {
         super.layout()
         let w = bounds.width, h = bounds.height
         let barH: CGFloat = 34
+        // .fullSizeContentView puts content under the title bar; keep the
+        // three columns below the ~28pt title-bar strip (same as AssetLibrary).
+        let top: CGFloat = 30
         let leftW: CGFloat = 262
         let rightW: CGFloat = min(330, max(290, w * 0.26))
-        let bodyH = h - barH
+        let bodyH = h - barH - top
         library.frame = NSRect(x: 0, y: barH, width: leftW, height: bodyH)
         preview.frame = NSRect(x: leftW, y: barH, width: w - leftW - rightW, height: bodyH)
         efi.frame = NSRect(x: w - rightW, y: barH, width: rightW, height: bodyH)
