@@ -133,22 +133,30 @@ func runRoot(_ lines: [String]) -> (ok: Bool, message: String) {
     if geteuid() == 0 {
         result = shellRun("/bin/bash", ["-c", script], timeout: 300)
     } else {
-        try? FileManager.default.createDirectory(at: Paths.scratch, withIntermediateDirectories: true)
-        let tmp = Paths.scratch.appendingPathComponent("octheme_\(UUID().uuidString).sh")
-        do {
-            try script.write(to: tmp, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700],
-                                                  ofItemAtPath: tmp.path)
-        } catch {
-            return (false, "无法创建临时脚本：\(error.localizedDescription)")
-        }
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        let cmd = "/bin/bash " + shq(tmp.path)
-        let escaped = cmd.replacingOccurrences(of: "\\", with: "\\\\")
-                         .replacingOccurrences(of: "\"", with: "\\\"")
-        let osa = "do shell script \"\(escaped)\" with administrator privileges"
-        result = shellRun("/usr/bin/osascript", ["-e", osa], timeout: 300)
+        let rootRun = appleScriptForRoot(script)
+        defer { if let tmp = rootRun.scriptURL { try? FileManager.default.removeItem(at: tmp) } }
+        result = shellRun("/usr/bin/osascript", ["-e", rootRun.osa], timeout: 300)
     }
+    return interpretRun(result)
+}
+
+private func appleScriptForRoot(_ script: String) -> (osa: String, scriptURL: URL?) {
+    try? FileManager.default.createDirectory(at: Paths.scratch, withIntermediateDirectories: true)
+    let tmp = Paths.scratch.appendingPathComponent("octheme_\(UUID().uuidString).sh")
+    do {
+        try script.write(to: tmp, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                              ofItemAtPath: tmp.path)
+    } catch {
+        return ("error \"无法创建临时脚本：\(error.localizedDescription)\"", nil)
+    }
+    let cmd = "/bin/bash " + shq(tmp.path)
+    let escaped = cmd.replacingOccurrences(of: "\\", with: "\\\\")
+                     .replacingOccurrences(of: "\"", with: "\\\"")
+    return ("do shell script \"\(escaped)\" with administrator privileges", tmp)
+}
+
+private func interpretRun(_ result: CmdResult) -> (ok: Bool, message: String) {
     if result.ok && result.out.contains("OCTHEME_OK") {
         return (true, result.out.replacingOccurrences(of: "OCTHEME_OK", with: "")
                         .trimmingCharacters(in: .whitespacesAndNewlines))
@@ -157,6 +165,24 @@ func runRoot(_ lines: [String]) -> (ok: Bool, message: String) {
         .trimmingCharacters(in: .whitespacesAndNewlines)
     if msg.contains("User canceled") || msg.contains("-128") { msg = "已取消管理员授权" }
     return (false, msg.isEmpty ? "命令执行失败" : msg)
+}
+
+/// Write to a mounted EFI volume. macOS TCC denies root shells spawned by
+/// AppleScript write access to removable volumes unless the app has Full Disk
+/// Access, while a normal FAT EFI mount (`noowners`) is writable by the user.
+/// Probe first: use the ordinary user whenever possible, escalate to root only
+/// when the volume really needs it.
+func runEFIWrite(_ lines: [String], mount: String) -> (ok: Bool, message: String) {
+    if geteuid() == 0 || ProcessInfo.processInfo.environment["OCTHEME_DRY_RUN"] == "1" {
+        return runRoot(lines)
+    }
+    let probe = (mount as NSString).appendingPathComponent(".octheme-write-probe")
+    guard FileManager.default.createFile(atPath: probe, contents: nil) else {
+        return runRoot(lines)
+    }
+    try? FileManager.default.removeItem(atPath: probe)
+    let script = "#!/bin/bash\nset -e\n" + lines.joined(separator: "\n") + "\necho OCTHEME_OK\n"
+    return interpretRun(shellRun("/bin/bash", ["-c", script], timeout: 300))
 }
 
 // MARK: - JSON / formatting

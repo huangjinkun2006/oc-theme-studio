@@ -636,7 +636,7 @@ enum EFIActions {
             }
             lines.append("cp " + shq(stage.appendingPathComponent("config.plist").path)
                          + " " + shq(cfg.path))
-            let done = runRoot(lines)
+            let done = runEFIWrite(lines, mount: mount)
             if !done.ok {
                 return ActionResult(ok: false, message: done.message, backupId: backup.id)
             }
@@ -785,7 +785,7 @@ enum EFIActions {
                 lines.append("cp " + shq(stagedCfg.path) + " " + shq(cfg.path))
             }
             let canopyFile = efiIsFile(oc.appendingPathComponent("Drivers/OpenCanopy.efi"))
-            let done = runRoot(lines)
+            let done = runEFIWrite(lines, mount: mp)
             if !done.ok {
                 return ActionResult(ok: false, message: done.message, backupId: backup.id)
             }
@@ -861,7 +861,7 @@ enum EFIActions {
             Paths.ensure()
             let tmpCfg = Paths.scratch.appendingPathComponent("chime-config-\(UUID().uuidString).plist")
             try stagedCfg.write(to: tmpCfg)
-            let done = runRoot(["cp " + shq(tmpCfg.path) + " " + shq(cfg.path)])
+            let done = runEFIWrite(["cp " + shq(tmpCfg.path) + " " + shq(cfg.path)], mount: mp)
             try? FileManager.default.removeItem(at: tmpCfg)
             guard done.ok else {
                 return ActionResult(ok: false, message: done.message, backupId: backup.id)
@@ -909,7 +909,7 @@ enum EFIActions {
             if efiIsFile(bcfg) {
                 lines.append("cp " + shq(bcfg.path) + " " + shq(oc.appendingPathComponent("config.plist").path))
             }
-            let done = runRoot(lines)
+            let done = runEFIWrite(lines, mount: mp)
             if !done.ok {
                 return ActionResult(ok: false, message: done.message,
                                     preRestoreBackup: pre.id)
