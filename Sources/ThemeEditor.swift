@@ -322,14 +322,17 @@ final class EditorRootView: NSView {
     override func layout() {
         super.layout()
         let pad: CGFloat = 16
-        nameLabel.frame = NSRect(x: pad, y: 14, width: 70, height: 16)
-        nameField.frame = NSRect(x: pad + 74, y: 10, width: 230, height: 24)
-        variantLabel.frame = NSRect(x: pad + 326, y: 14, width: 110, height: 16)
-        variantField.frame = NSRect(x: pad + 440, y: 10, width: 230, height: 24)
-        stats.frame = NSRect(x: bounds.width - pad - 240, y: 14, width: 240, height: 16)
-        topLine.frame = NSRect(x: pad, y: 48, width: bounds.width - pad * 2, height: 1)
+        // .fullSizeContentView puts content under the title bar; keep the
+        // toolbar below the ~28pt title-bar strip.
+        let top: CGFloat = 30
+        nameLabel.frame = NSRect(x: pad, y: top + 14, width: 70, height: 16)
+        nameField.frame = NSRect(x: pad + 74, y: top + 10, width: 230, height: 24)
+        variantLabel.frame = NSRect(x: pad + 326, y: top + 14, width: 110, height: 16)
+        variantField.frame = NSRect(x: pad + 440, y: top + 10, width: 230, height: 24)
+        stats.frame = NSRect(x: bounds.width - pad - 240, y: top + 14, width: 240, height: 16)
+        topLine.frame = NSRect(x: pad, y: top + 48, width: bounds.width - pad * 2, height: 1)
 
-        let bodyTop: CGFloat = 60
+        let bodyTop: CGFloat = top + 60
         let bodyH = max(220, bounds.height - bodyTop - 64)
         pane.frame = NSRect(x: pad, y: bodyTop, width: 340, height: bodyH)
 

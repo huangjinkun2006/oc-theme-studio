@@ -43,11 +43,14 @@ final class DesignRootView: NSView {
         super.layout()
         let pad: CGFloat = 14
         let w = bounds.width
+        // .fullSizeContentView puts content under the title bar; keep the
+        // toolbar below the ~28pt title-bar strip.
+        let top: CGFloat = 30
 
-        title.frame = NSRect(x: pad, y: 12, width: 150, height: 20)
-        aspectCtrl.frame = NSRect(x: pad + 158, y: 10, width: 120, height: 24)
+        title.frame = NSRect(x: pad, y: top + 12, width: 150, height: 20)
+        aspectCtrl.frame = NSRect(x: pad + 158, y: top + 10, width: 120, height: 24)
 
-        let by: CGFloat = 8
+        let by: CGFloat = top + 8
         let doneX = w - pad - 76
         doneBtn.frame = NSRect(x: doneX, y: by, width: 76, height: 28)
         resetBtn.frame = NSRect(x: doneX - 8 - 108, y: by, width: 108, height: 28)
@@ -60,11 +63,11 @@ final class DesignRootView: NSView {
         libraryBtn.frame = NSRect(x: saveBtn.frame.minX - 8 - 118, y: by,
                                   width: 118, height: 28)
 
-        topLine.frame = NSRect(x: pad, y: 48, width: w - pad * 2, height: 1)
+        topLine.frame = NSRect(x: pad, y: top + 48, width: w - pad * 2, height: 1)
         bottomLine.frame = NSRect(x: pad, y: bounds.height - 34,
                                   width: w - pad * 2, height: 1)
 
-        let bodyTop: CGFloat = 58
+        let bodyTop: CGFloat = top + 58
         let bodyH = max(240, bounds.height - bodyTop - 40)
         let inspW: CGFloat = 254
         inspector.frame = NSRect(x: w - pad - inspW, y: bodyTop,
