@@ -24,6 +24,12 @@ echo "==> 1/5 检查原生 .app"
 if [ ! -x "$APP/Contents/MacOS/OCThemeStudioSwift" ]; then
     bash "$ROOT/SwiftApp/build.sh"
 fi
+# Guard against a corrupted bundle Info.plist (Swift IR fragments once landed
+# here and made the built app fail to launch with "damaged or incomplete").
+# Always refresh it from the pristine source and lint before packaging.
+cp "$HERE/../Info.plist" "$APP/Contents/Info.plist"
+/usr/bin/plutil -lint "$APP/Contents/Info.plist"
+/usr/bin/codesign --force --deep --sign - "$APP" 2>/dev/null || true
 
 echo "==> 2/5 生成带箭头的安装背景"
 /usr/bin/swiftc "$HERE/make_background.swift" -o "$CACHE/make_bg"
