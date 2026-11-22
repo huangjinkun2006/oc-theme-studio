@@ -287,11 +287,19 @@ extension EFIInspect {
         }
         let res = oc.appendingPathComponent("Resources", isDirectory: true)
         if efiIsDir(res) {
-            for sub in ["Image", "Font", "Label", "Sound"] {
+            for sub in ["Image", "Font", "Label", "Audio"] {
                 let d = res.appendingPathComponent(sub, isDirectory: true)
                 if !efiIsDir(d) { r.resources[sub] = 0; continue }
                 let items = (try? FileManager.default.contentsOfDirectory(atPath: d.path)) ?? []
                 r.resources[sub] = items.filter { !$0.hasPrefix(".") }.count
+            }
+            // Old installs kept the chime in Resources/Sound. Count it into
+            // Audio so pre-2.7.1 EFI layouts are still reported correctly.
+            let legacy = res.appendingPathComponent("Sound", isDirectory: true)
+            if efiIsDir(legacy) {
+                let items = (try? FileManager.default.contentsOfDirectory(atPath: legacy.path)) ?? []
+                r.resources["Audio"] = (r.resources["Audio"] ?? 0)
+                    + items.filter { !$0.hasPrefix(".") }.count
             }
         }
         r.canopyDriverFile = efiIsFile(oc.appendingPathComponent("Drivers/OpenCanopy.efi"))
@@ -573,11 +581,18 @@ enum EFIActions {
                 stageImage.appendPathComponent(c, isDirectory: true)
             }
             if efiIsDir(srcImage) { try copyTree(srcImage, stageImage) }
-            for folder in ["Font", "Label", "Sound"] {
+            for folder in ["Font", "Label", "Audio"] {
                 let s = pkgRes.appendingPathComponent(folder, isDirectory: true)
                 if efiIsDir(s) {
                     try copyTree(s, stage.appendingPathComponent(folder, isDirectory: true))
                 }
+            }
+            // EFI config packages made by older app versions store the chime in
+            // Resources/Sound; fold them into Audio so the installed theme can
+            // actually play on OpenCore.
+            let legacySound = pkgRes.appendingPathComponent("Sound", isDirectory: true)
+            if efiIsDir(legacySound) {
+                try copyTree(legacySound, stage.appendingPathComponent("Audio", isDirectory: true))
             }
 
             let mergedPl = mergePickerSettings(target: pl, packageBoot: pkgBoot,
@@ -591,7 +606,7 @@ enum EFIActions {
                 "mkdir -p " + [oc.appendingPathComponent("Resources/Image").path,
                                oc.appendingPathComponent("Resources/Font").path,
                                oc.appendingPathComponent("Resources/Label").path,
-                               oc.appendingPathComponent("Resources/Sound").path]
+                               oc.appendingPathComponent("Resources/Audio").path]
                     .map(shq).joined(separator: " "),
             ]
             var imageDst = oc.appendingPathComponent("Resources/Image", isDirectory: true)
@@ -601,7 +616,7 @@ enum EFIActions {
             if efiIsDir(stageImage) {
                 lines.append("cp -R " + shq(stageImage.path + "/.") + " " + shq(imageDst.path + "/"))
             }
-            for folder in ["Font", "Label", "Sound"] {
+            for folder in ["Font", "Label", "Audio"] {
                 let s = stage.appendingPathComponent(folder, isDirectory: true)
                 if !efiIsDir(s) { continue }
                 let d = oc.appendingPathComponent("Resources/" + folder, isDirectory: true)
@@ -685,8 +700,11 @@ enum EFIActions {
                 && !((try? FileManager.default.contentsOfDirectory(atPath: efiFontDir.path))?.isEmpty ?? true)
             let themeHasFont = !theme.installList("font").isEmpty
 
+            // OpenCore reads the boot chime from Resources/Audio, never from
+            // Resources/Sound. The manifest key stays "sound"; only the on-EFI
+            // folder name changes so existing theme packages need no rebuild.
             let buckets: [(String, String)] = [("Image", "image"), ("Font", "font"),
-                                                ("Label", "label"), ("Sound", "sound")]
+                                                ("Label", "label"), ("Audio", "sound")]
             for (folder, key) in buckets {
                 var seen = Set<String>()
                 let rels = theme.installList(key).filter { seen.insert($0).inserted }
@@ -727,7 +745,7 @@ enum EFIActions {
                 "mkdir -p " + [oc.appendingPathComponent("Resources/Image").path,
                                oc.appendingPathComponent("Resources/Font").path,
                                oc.appendingPathComponent("Resources/Label").path,
-                               oc.appendingPathComponent("Resources/Sound").path]
+                               oc.appendingPathComponent("Resources/Audio").path]
                     .map(shq).joined(separator: " "),
             ]
             var imageDst = oc.appendingPathComponent("Resources/Image", isDirectory: true)

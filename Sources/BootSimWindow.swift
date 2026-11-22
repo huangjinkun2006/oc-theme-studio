@@ -42,7 +42,7 @@ private func readHostTheme() -> Theme? {
         .appendingPathComponent("EFI/OC/Resources", isDirectory: true)
     guard simIsDir(base) else { return nil }
     let fm = FileManager.default
-    let subdirs = ["Image", "Font", "Label", "Sound"]
+    let subdirs = ["Image", "Font", "Label", "Audio", "Sound"]
     var sources: [URL] = []
     for sub in subdirs {
         let d = base.appendingPathComponent(sub, isDirectory: true)

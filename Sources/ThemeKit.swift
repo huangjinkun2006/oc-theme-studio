@@ -642,7 +642,7 @@ final class ThemeLibrary {
     func importCurrentTheme(mount: String, device: String, name: String?) throws -> Theme {
         let base = URL(fileURLWithPath: mount).appendingPathComponent("EFI/OC/Resources", isDirectory: true)
         guard isDir(base) else { throw AppError.message("该 EFI 分区没有 EFI/OC/Resources 目录") }
-        let subdirs = ["Image", "Font", "Label", "Sound"]
+        let subdirs = ["Image", "Font", "Label", "Audio", "Sound"]
         var sources: [URL] = []
         for sub in subdirs {
             let d = base.appendingPathComponent(sub)

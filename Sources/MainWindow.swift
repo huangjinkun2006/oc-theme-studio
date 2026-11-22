@@ -1315,7 +1315,7 @@ final class MainWindowController: NSWindowController, NSTableViewDataSource,
                     "主题目录：\(i.imageVariantPresent ? "存在" : "缺失 ← 会显示文字菜单")",
                     "OpenCanopy：\(i.canopyInConfig ? "已启用" : "未启用") · \(i.canopyDriverFile ? "驱动存在" : "驱动缺失")",
                     "Resources：Image \(i.resources["Image"] ?? 0) · Font \(i.resources["Font"] ?? 0)" +
-                        " · Label \(i.resources["Label"] ?? 0) · Sound \(i.resources["Sound"] ?? 0)",
+                        " · Label \(i.resources["Label"] ?? 0) · Audio \(i.resources["Audio"] ?? 0)",
                     "图形菜单：\(i.graphicalReady ? "配置就绪" : "配置不完整")",
                 ]
             } else {

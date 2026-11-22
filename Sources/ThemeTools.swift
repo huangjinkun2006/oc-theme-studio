@@ -362,7 +362,7 @@ private func flattenResources(_ dir: URL) -> Bool {
             moved += 1
         }
     }
-    for bucket in ["Font", "Label", "Sound"] {
+    for bucket in ["Font", "Label", "Audio", "Sound"] {
         moveFiles(from: res.appendingPathComponent(bucket))
     }
     // Image/<Vendor>/<Variant>/* — take the first variant that has pictures.
